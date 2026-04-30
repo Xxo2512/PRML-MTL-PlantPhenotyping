@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.Python
+.venv/
+venv/
+env/
+
+# 权重文件
+*.pth
+*.pt
+*.ckpt
+*.bin
+*.safetensors
+checkpoints/
+weights/
+
+# 数据集
+data/
+datasets/raw/
+*.zip
+*.tar.gz
+*.h5
+
+# 日志和输出
+logs/
+runs/
+wandb/
+outputs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# 临时文件
+*.tmp
+tmp/
