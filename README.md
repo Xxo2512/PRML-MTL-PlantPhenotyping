@@ -122,13 +122,7 @@ PRML-MTL-PlantPhenotyping/
 
 ---
 
-## 7. 评分对齐（与指导书 §5 一致）
-
-成绩由方案设计、代码实现、实验完整度、报告与答辩共同决定。本项目按"主表完整 + 至少 3 项消融 + 可运行 Demo + 报告章节齐全"为合格线，各方法消融与可视化深度作为冲优空间。
-
----
-
-## 8. 参考文献
+## 6. 参考文献
 
 [1] Liu et al. *Multi-task Deep Neural Networks for Natural Language Understanding.* ACL 2019.
 [2] Agiza, Neseem, Reda. *MTLoRA: Low-rank Adaptation Approach for Efficient Multi-task Learning.* CVPR 2024.
