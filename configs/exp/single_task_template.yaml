@@ -1,0 +1,19 @@
+# 单任务 baseline：开启 single_task 字段，sampler 只取该任务
+# 4 个任务跑 4 次：seg / det / cnt / cls
+# 作为 MTL 的 reference 上限 / 下限
+
+_base_: ../method/vanilla.yaml
+
+exp_name: single_seg
+data:
+  scheduler: rr
+  single_task: seg       # 非空时 sampler 只产出该 task；其它 task head 不实例化
+
+tasks:
+  seg: { enabled: true,  data_root: data/wheat_seg, num_classes: 5 }
+  det: { enabled: false }
+  cnt: { enabled: false }
+  cls: { enabled: false }
+
+train:
+  epochs: 50

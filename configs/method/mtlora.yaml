@@ -1,0 +1,12 @@
+_base_: ../base.yaml
+exp_name: mtlora_swint_384_rr
+method: mtlora
+
+model:
+  freeze_backbone: true     # MTLoRA 冻结骨干，仅训练 LoRA + heads + InputAdapter
+  mtlora:
+    rank: 16
+    alpha: 16
+    target_modules: [qkv, proj, fc1, fc2]
+    use_task_specific: true
+    use_task_agnostic:  true

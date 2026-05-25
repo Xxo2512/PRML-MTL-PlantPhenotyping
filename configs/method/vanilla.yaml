@@ -1,0 +1,12 @@
+# vanilla = 共享 Swin backbone + 4 个 task head，无任何 MTL trick
+# 用作所有 MTL 方法的对照下限（共享多任务）+ 单任务上限（开 single_task: <t>）
+
+_base_: ../base.yaml
+exp_name: vanilla_swint_384_rr
+method: vanilla
+
+model:
+  freeze_backbone: false   # vanilla 不冻结，让 backbone 也学习
+
+train:
+  epochs: 50

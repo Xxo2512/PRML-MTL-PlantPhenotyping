@@ -1,0 +1,9 @@
+_base_: ../base.yaml
+exp_name: ditask_swint_384_rr
+method: ditask
+
+model:
+  freeze_backbone: true
+  ditask:
+    phi_type: svd_rotation
+    rank: 8                # 每 stage 微分同胚映射的低秩参数

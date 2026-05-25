@@ -1,0 +1,9 @@
+_base_: ../base.yaml
+exp_name: pgt_swint_384_rr
+method: pgt
+
+model:
+  freeze_backbone: true
+  pgt:
+    n_prompt: 8
+    use_cross_attn: true

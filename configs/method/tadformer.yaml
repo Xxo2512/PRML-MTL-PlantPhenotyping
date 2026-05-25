@@ -1,0 +1,9 @@
+_base_: ../base.yaml
+exp_name: tadformer_swint_384_rr
+method: tadformer
+
+model:
+  freeze_backbone: true
+  tadformer:
+    task_dim: 64
+    per_stage: true        # 每 stage 一个调制器

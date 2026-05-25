@@ -1,0 +1,15 @@
+# 调度策略消融：RR / PS / HM 三种
+# 用同一 method (默认 mtlora) 切换 scheduler，得到 3 行结果。
+
+_base_: ../method/mtlora.yaml
+
+# 各 variant 在命令行用 --override data.scheduler=ps / hm 切换
+# 或者直接拷三份：
+#   configs/exp/sched_rr.yaml    -> data.scheduler=rr, exp_name=ablate_sched_rr
+#   configs/exp/sched_ps.yaml    -> data.scheduler=ps, exp_name=ablate_sched_ps
+#   configs/exp/sched_hm.yaml    -> data.scheduler=hm, exp_name=ablate_sched_hm,
+#                                   train.accum_steps=1, data.batch_per_task=4
+
+exp_name: ablate_sched_rr
+data:
+  scheduler: rr

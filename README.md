@@ -3,6 +3,23 @@
 > 华中科技大学 人工智能与自动化学院 — 2026 春《模式识别与机器学习》课程设计 选题
 
 ---
+
+## 阶段 I 进度（W10–W12）
+
+| 交付物 | 路径 | 主笔 | 状态 |
+|---|---|---|---|
+| 文献综述（MTDNN + 5 种 MTL 方法 + 共性差异表 + head 补齐） | [`docs/literature_review.md`](docs/literature_review.md) | A | ✅ |
+| 系统设计稿 v1.0（架构、调度、接口、loss、训练流程、消融计划） | [`docs/design.md`](docs/design.md) | A | ✅ |
+| 接口契约 | [`docs/api_contract.md`](docs/api_contract.md) | A | ✅ |
+| 配置模板（base + 5 方法 + 消融 + 单任务） | [`configs/`](configs/) | A | ✅ |
+
+**冻结项**：
+- 任务键 `TASKS = ('seg', 'det', 'cnt', 'cls')`
+- `SwinBackbone` / `InputAdapter` / `BaseTaskHead` / `MTLModel` / `CrossDatasetSampler` 签名
+- yaml 顶层 schema
+
+---
+
 ## 1. 项目概述
 
 在植物表型视觉分析中，**分割 / 检测 / 计数 / 分类**是四大核心任务。现有多任务学习（MTL）方法多假设 *任务共享同一张输入图像* ，但在实际作物监测场景中，不同任务通常依赖**不同数据集**和**不同图像输入**——任务异质、数据异源，使得传统 MTL 难以直接迁移。

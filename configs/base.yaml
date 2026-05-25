@@ -1,0 +1,77 @@
+# =====================================================================
+# Base configuration — 所有方法/实验从此继承
+# 用法：configs/method/<x>.yaml 仅覆盖差异字段；configs/exp/<x>.yaml 是
+#       完整可跑配置（在 method 之上再覆盖 exp_name / 个别超参）。
+# =====================================================================
+
+exp_name: base
+method:   vanilla        # vanilla | mtlora | tadformer | ditask | taskprompter | pgt
+seed:     42
+
+model:
+  backbone: swin_tiny
+  pretrained: timm/swin_tiny_patch4_window7_224.ms_in1k
+  input_size: 384
+  freeze_backbone: false   # vanilla 默认 false；method 配置会覆盖
+
+  # method-specific（仅对应方法读取，其它忽略）
+  mtlora:
+    rank: 16
+    alpha: 16
+    target_modules: [qkv, proj, fc1, fc2]
+    use_task_specific: true
+    use_task_agnostic:  true
+  tadformer:
+    task_dim: 64
+    per_stage: true
+  ditask:
+    phi_type: svd_rotation
+    rank: 8
+  taskprompter:
+    n_spatial: 4
+    n_channel: 4
+  pgt:
+    n_prompt: 8
+    use_cross_attn: true
+
+data:
+  scheduler: rr            # rr | ps | hm
+  batch_per_task: 8
+  num_workers: 8
+  proportional_alpha: 0.5  # 仅 ps 模式
+
+tasks:
+  seg:
+    enabled: true
+    data_root: data/wheat_seg
+    num_classes: 5         # background + 4 organ class（待 B/C 确认）
+  det:
+    enabled: true
+    data_root: data/wheat_det
+    num_classes: 1         # 只检测麦穗一类
+  cnt:
+    enabled: true
+    data_root: data/wheat_cnt
+  cls:
+    enabled: true
+    data_root: data/wheat_cls
+    num_classes: 8         # 待 E 确认数据集类别数
+
+loss:
+  weighting: uncertainty   # uniform | dwa | uncertainty
+  dwa_temp: 2.0
+
+train:
+  epochs: 50
+  optimizer: adamw
+  lr: 1.0e-4
+  weight_decay: 0.05
+  warmup_steps: 1000
+  grad_clip: 1.0
+  accum_steps: 4           # rr 默认 = #TASKS；hm 模式应设 1
+  eval_every: 2000
+  ckpt_every: 5000
+
+paths:
+  out_dir: checkpoints/${exp_name}
+  log_dir: logs/${exp_name}

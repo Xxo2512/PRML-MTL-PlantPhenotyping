@@ -1,0 +1,9 @@
+_base_: ../base.yaml
+exp_name: taskprompter_swint_384_rr
+method: taskprompter
+
+model:
+  freeze_backbone: true
+  taskprompter:
+    n_spatial: 4
+    n_channel: 4

@@ -1,0 +1,6 @@
+# Loss 加权消融：uniform / dwa / uncertainty
+_base_: ../method/mtlora.yaml
+
+exp_name: ablate_lossw_uniform
+loss:
+  weighting: uniform
