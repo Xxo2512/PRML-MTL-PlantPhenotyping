@@ -46,15 +46,20 @@
 
 ## 2. 4 个数据集 / 输入规约
 
-| 任务 (key) | 原始数据集 | 典型分辨率 | 标注 | InputAdapter 输出 |
-|---|---|---|---|---|
-| `seg` | Wheat Organ Segmentation | ~1024×1024 | per-pixel mask | RandomCrop→384×384 |
-| `det` | Wheat Head Detection (ground) | ~1024×1024 | bbox | Resize→384×384, keep ratio + pad |
-| `cnt` | Wheat Leaf Counting | 任意 | point | Resize 短边 384 + CenterCrop 384 |
-| `cls` | Wheat Disease Classification | 224–1024 | image-label | Resize→256 + RandomCrop 224，再 pad 到 384 |
+> 实际数据集结构与统计（W12 末确认，见 `docs/dataset_card.md`）。
+
+| 任务 (key) | 原始数据集 | train/val/test | 标注 | 分辨率 | InputAdapter 输出 |
+|---|---|---|---|---|---|
+| `seg` | Wheat Organ Segmentation | 789 / 99 / 99 | 单通道 mask，**4 类**（含背景） | 512×512 | RandomCrop→384×384 |
+| `det` | Wheat Head Detection (ground) | 3607 / 1448 / 1382 | **YOLO** (class cx cy w h, 单类) | 1024×1024 | Resize→384×384, keep ratio + pad |
+| `cnt` | Wheat **Leaf Tip** Counting | 1508 / 379 / —(无) | **Pascal VOC XML**，`<object><name>tip</name><bndbox>...</bndbox>`；bbox 中心作为点 | 1024×1024 | Resize 短边 384 + CenterCrop 384 |
+| `cls` | **Wheat Growth Stage**（生育期分类，**6 类**） | 61489 / 7702 / 7701 | ImageFolder | 400×400 | Resize→256 + RandomCrop 224，再 pad 到 384 |
 
 > 训练时所有 task 的 InputAdapter 把图像统一吐成 `B × 3 × 384 × 384` 张量；归一化用 ImageNet mean/std（Swin 预训练对齐）。
 > 测试用 InputAdapter 关闭随机增广，分割与检测保留 keep-ratio resize（不丢失精度）。
+> **cls 类别**：1_Tillering, 2_Jointing, 3_BH(Booting+Heading), 4_Flowering, 5_Filling, 6_Ripening。
+> **seg 类别**：0=Background, 1=Head, 2=Stem, 3=Leaf。
+> **cnt 标注**：Pascal VOC XML，object name=tip；bbox 中心当作点标注喂 density-map 监督（W14 升 PET head 后切换为点查询）。
 
 ---
 
