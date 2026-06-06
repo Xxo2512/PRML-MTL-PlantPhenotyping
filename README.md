@@ -11,12 +11,101 @@
 | 文献综述（MTDNN + 5 种 MTL 方法 + 共性差异表 + head 补齐） | [`docs/literature_review.md`](docs/literature_review.md) | A | ✅ |
 | 系统设计稿 v1.0（架构、调度、接口、loss、训练流程、消融计划） | [`docs/design.md`](docs/design.md) | A | ✅ |
 | 接口契约 | [`docs/api_contract.md`](docs/api_contract.md) | A | ✅ |
+| 数据集卡片（4 数据集真实统计 + 老师 W12 末答疑已合并） | [`docs/dataset_card.md`](docs/dataset_card.md) | A | ✅ |
 | 配置模板（base + 5 方法 + 消融 + 单任务） | [`configs/`](configs/) | A | ✅ |
 
 **冻结项**：
 - 任务键 `TASKS = ('seg', 'det', 'cnt', 'cls')`
 - `SwinBackbone` / `InputAdapter` / `BaseTaskHead` / `MTLModel` / `CrossDatasetSampler` 签名
 - yaml 顶层 schema
+
+---
+
+## 阶段 II 进度（W13W14，进行中）
+
+### 已完成 (A)
+
+| 模块 | 路径 | 说明 |
+|---|---|---|
+| 4 个 Dataset | [`datasets/wheat_{cls,seg,det,cnt}.py`](datasets/) | cls=ImageFolder, seg=mask PNG, det=YOLO txt, cnt=VOC XML (叶尖) |
+| InputAdapter | [`datasets/input_adapter.py`](datasets/input_adapter.py) | 4 任务统一归一化到 `[3,384,384]`，keep-ratio resize + 同步 box/point 变换 |
+| CrossDatasetSampler | [`datasets/cross_dataset.py`](datasets/cross_dataset.py) | RR / PS (α=0.5) / HM 三种调度 |
+| Swin-T Backbone | [`models/backbone/swin.py`](models/backbone/swin.py) | timm `swin_tiny_patch4_window7_224`，自动走 hf-mirror |
+| 4 个 Task Head（占位简化版） | [`models/heads/`](models/heads/) | cls=GAP+Linear / seg=FPN-lite / det=stride-8 obj+ltrb / cnt=density 回归 |
+| vanilla MTLModel | [`models/mtl/base.py`](models/mtl/base.py) | 共享 backbone + 独立 head，作为后续 MTL 方法对照基线 |
+| LossAggregator | [`utils/losses.py`](utils/losses.py) | `uniform` + Kendall'18 `uncertainty` 可学权重 |
+| Config loader | [`utils/config.py`](utils/config.py) | yaml `_base_` 继承，属性 + 下标双访问 |
+| 训练入口 | [`train.py`](train.py) | smoke / 短训通用，支持 `--steps` / `--epochs` |
+| Smoke test | [`scripts/smoke_test.py`](scripts/smoke_test.py) | 5 step 自检, 验证接口对齐 |
+
+### W13 跑通的初步结果（vanilla, 100 step, GPU=RTX 4060 8GB）
+
+**Smoke test (CPU/GPU 通用)**：5 step PASS，4 任务 forward+backward 都能产 loss。
+
+**短训 100 step, RR 调度, uncertainty 加权**：
+```
+[data] sizes (batches): seg=98, det=450, cnt=188, cls=7631
+[step  0] L=0.70  seg=1.40
+[step 20] L=0.46  seg=0.89  ← seg 单调下降, pipeline OK
+[step 50] L=1.64  cnt=3.28  ← cnt 已正常 (旧 .mat 数据集换成 VOC XML 后)
+[step 90] L=1.98  cnt=3.97
+```
+吞吐 ~3.4 it/s，单 epoch ≈ 37 min。
+
+**短训 100 step, PS 调度 (α=0.5)**：
+```
+[step  0] L=0.94  cls=1.87
+[step 30] L=0.39  cls=0.78
+[step 40] L=0.16  det=0.31
+[step 50] L=0.48  seg=0.96
+[step 90] L=0.11  det=0.23
+```
+4 任务都见到信号，PS 工作正常。**当前默认调度已切到 `ps`** (`configs/base.yaml`)。
+
+
+---
+
+## W13 末 — 各组员 to-do
+
+> 框架已经"通"了，现在每个人在自己负责的 **task head + MTL 方法** 上把"对"做好。两步走：**先升级 head → 再写 MTL 方法**。所有改动走 PR + A review，遵循 [`docs/api_contract.md`](docs/api_contract.md)。
+
+### A（组长 / 架构 / MTLoRA）
+- [ ] 写 `evaluate.py`：4 个 metric (cls top-1, seg mIoU, det 简化 IoU/recall, cnt MAE) + best-ckpt 选择 + 写 `logs/results.csv`
+- [ ] 把 vanilla 在 4 任务各跑 5 epoch (single-task baseline) 入表，作为后续所有 MTL 的对照下/上限
+- [ ] 起 W14 第一件事：`models/mtl/mtlora.py` — 在 Swin attn/FFN 上注入 TA-LoRA + TS-LoRA，按 task 路由
+
+### B（数据 & 检测 / TADFormer）
+- [ ] 升级 `models/heads/det_fcos.py` 占位版 → 完整 **FCOS** 头（多尺度 FPN + centerness + Focal/IoU/BCE loss + NMS 后处理）
+  - 参考：Tian et al. *FCOS: Fully Convolutional One-Stage Object Detection*, TPAMI 2020
+  - 现版本只在 stride-8 上做单尺度回归，对小麦穗这种密集小目标会漏召回
+- [ ] 在 `utils/metrics.py` 补 **AP / AP50**（用 pycocotools 或自实现 IoU+匹配）
+- [ ] 起 W14：`models/mtl/tadformer.py` — 任务嵌入 + 每 block 动态调制 (γ, β)，需在 `SwinBackbone.forward(x, task=...)` 里挂钩
+
+### C（分割 & 可视化 / DiTASK）
+- [ ] 升级 `models/heads/seg_dpt.py` FPN-lite → 完整 **DPT** 头（Reassemble + Fusion blocks）
+  - 参考：Ranftl et al. *Vision Transformers for Dense Prediction*, ICCV 2021
+- [ ] 写 `utils/visualize.py`：4 任务可视化工具（seg mask 叠加 / det boxes / cnt density 热图 / cls Grad-CAM），输出到 TensorBoard
+- [ ] 起 W14：`models/mtl/ditask.py` — 在 backbone 输出后挂可逆微分同胚映射 `Φ_t`（每 stage 一份）
+
+### D（计数 & 评测 / TaskPrompter）
+- [ ] 升级 `models/heads/cnt_pet.py` density 占位版 → **PET** 风格点查询头（quadtree 划分 + 点查询 Hungarian 匹配）
+  - 参考：Liu et al. *Point-Query Quadtree for Crowd Counting*, ICCV 2023
+- [ ] 在 `utils/metrics.py` 锁死 **统一 metric 模块**：seg mIoU/mAcc, det AP/AP50, cnt MAE/RMSE/R², cls mAP/BA
+- [ ] 起 W14：`models/mtl/taskprompter.py` — 每 block 在 token 序列前拼 spatial prompt + FiLM 风格 channel prompt
+
+### E（分类 & 部署 / PGT）
+- [ ] cls head 已经够用；但 **加 ordinal CE 选项**（生育期 6 类是有序的，相邻类误分应轻于跨类误分）
+  - 参考：Niu et al. *Ordinal Regression with Multiple Output CNN*, CVPR 2016
+  - 加在 `models/heads/cls_mlp.py`，由 yaml `tasks.cls.loss=ce|ordinal` 切换
+- [ ] 写 `utils/logger.py`：统一 TensorBoard + `logs/results.csv` 写入 + checkpoint 规范（按 `docs/api_contract.md §9`）
+- [ ] 写 `scripts/demo.py`：单图输入 → 4 任务输出（vanilla 即可，W17 升 MTL）
+- [ ] 起 W14：`models/mtl/pgt.py` — 每 block prompt + prompt-guided cross-attention
+
+### 协同约定（再次重申）
+- 分支：`feat/<name>-<module>`，PR 合入 `main` 前必须经组长 (A) review
+- 共享代码（backbone / dataloader / metric / loss）变更走小 PR；个人 MTL 方法各自在 `models/mtl/<method>.py` 维护，不互相干扰
+- 实验结果写 `logs/results.csv`，D 负责合并
+- 例会：每周一晚 21:00（30 min）；W13 末例会上各组员 demo 自己升级后的 head 在单任务下的 loss/metric 数
 
 ---
 

@@ -5,17 +5,90 @@ from typing import Dict, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
+import torchvision.transforms.functional as TF
 from PIL import Image
 
 
-IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+IMAGENET_MEAN = (0.485, 0.456, 0.406)
+IMAGENET_STD = (0.229, 0.224, 0.225)
+INPUT_SIZE = 384
+
+_MEAN_TENSOR = torch.tensor(IMAGENET_MEAN).view(3, 1, 1)
+_STD_TENSOR = torch.tensor(IMAGENET_STD).view(3, 1, 1)
+
+
+def _normalize(tensor: torch.Tensor) -> torch.Tensor:
+    return TF.normalize(tensor, IMAGENET_MEAN, IMAGENET_STD)
+
+
+def adapt_cls(pil: Image.Image, train: bool) -> torch.Tensor:
+    pil = pil.convert("RGB").resize((INPUT_SIZE, INPUT_SIZE), Image.BILINEAR)
+    if train and np.random.rand() < 0.5:
+        pil = pil.transpose(Image.FLIP_LEFT_RIGHT)
+    return _normalize(TF.to_tensor(pil))
+
+
+def adapt_seg(pil_img: Image.Image, pil_mask: Image.Image, train: bool):
+    pil_img = pil_img.convert("RGB").resize((INPUT_SIZE, INPUT_SIZE), Image.BILINEAR)
+    pil_mask = pil_mask.resize((INPUT_SIZE, INPUT_SIZE), Image.NEAREST)
+    if train and np.random.rand() < 0.5:
+        pil_img = pil_img.transpose(Image.FLIP_LEFT_RIGHT)
+        pil_mask = pil_mask.transpose(Image.FLIP_LEFT_RIGHT)
+    img = _normalize(TF.to_tensor(pil_img))
+    mask = torch.from_numpy(np.array(pil_mask, dtype=np.int64))
+    return img, mask
+
+
+def adapt_det(pil: Image.Image, boxes_xyxy_norm: np.ndarray, train: bool):
+    """Compatibility helper used by main-line datasets.
+
+    Inputs and returned boxes are normalized xyxy coordinates.
+    """
+
+    pil = pil.convert("RGB")
+    width, height = pil.size
+    scale = INPUT_SIZE / max(width, height)
+    new_w, new_h = int(round(width * scale)), int(round(height * scale))
+    pil = pil.resize((new_w, new_h), Image.BILINEAR)
+    canvas = Image.new("RGB", (INPUT_SIZE, INPUT_SIZE), (114, 114, 114))
+    canvas.paste(pil, (0, 0))
+
+    boxes = boxes_xyxy_norm.astype(np.float32, copy=True)
+    if boxes.size > 0:
+        boxes[:, [0, 2]] *= width * scale / INPUT_SIZE
+        boxes[:, [1, 3]] *= height * scale / INPUT_SIZE
+    if train and np.random.rand() < 0.5:
+        canvas = canvas.transpose(Image.FLIP_LEFT_RIGHT)
+        if boxes.size > 0:
+            x1 = 1.0 - boxes[:, 2]
+            x2 = 1.0 - boxes[:, 0]
+            boxes[:, 0] = x1
+            boxes[:, 2] = x2
+    return _normalize(TF.to_tensor(canvas)), boxes
+
+
+def adapt_cnt(pil: Image.Image, points_xy: np.ndarray, train: bool):
+    pil = pil.convert("RGB")
+    width, height = pil.size
+    scale = INPUT_SIZE / max(width, height)
+    new_w, new_h = int(round(width * scale)), int(round(height * scale))
+    pil = pil.resize((new_w, new_h), Image.BILINEAR)
+    canvas = Image.new("RGB", (INPUT_SIZE, INPUT_SIZE), (114, 114, 114))
+    canvas.paste(pil, (0, 0))
+
+    points = points_xy.astype(np.float32) * scale if points_xy.size > 0 else points_xy
+    if train and np.random.rand() < 0.5:
+        canvas = canvas.transpose(Image.FLIP_LEFT_RIGHT)
+        if points.size > 0:
+            points = points.copy()
+            points[:, 0] = INPUT_SIZE - 1 - points[:, 0]
+    return _normalize(TF.to_tensor(canvas)), points
 
 
 class InputAdapter:
     """Normalize heterogeneous task samples into the frozen model contract."""
 
-    def __init__(self, task: str, train: bool, input_size: int = 384):
+    def __init__(self, task: str, train: bool, input_size: int = INPUT_SIZE):
         if task not in {"seg", "det", "cnt", "cls"}:
             raise ValueError(f"Unknown task: {task}")
         self.task = task
@@ -40,7 +113,7 @@ class InputAdapter:
             targets = self._adapt_cls_targets(sample)
 
         return {
-            "image": self._normalize(image_tensor),
+            "image": self._normalize_tensor(image_tensor),
             "targets": targets,
             "meta": {
                 "image_path": sample.get("image_path", ""),
@@ -113,5 +186,5 @@ class InputAdapter:
         return torch.from_numpy(array).permute(2, 0, 1).contiguous()
 
     @staticmethod
-    def _normalize(image: torch.Tensor) -> torch.Tensor:
-        return (image - IMAGENET_MEAN.to(image)) / IMAGENET_STD.to(image)
+    def _normalize_tensor(image: torch.Tensor) -> torch.Tensor:
+        return (image - _MEAN_TENSOR.to(image)) / _STD_TENSOR.to(image)

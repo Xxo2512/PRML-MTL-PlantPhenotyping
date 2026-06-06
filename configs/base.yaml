@@ -35,7 +35,7 @@ model:
     use_cross_attn: true
 
 data:
-  scheduler: rr            # rr | ps | hm
+  scheduler: ps            # rr | ps | hm
   batch_per_task: 8
   num_workers: 8
   proportional_alpha: 0.5  # 仅 ps 模式
@@ -43,19 +43,27 @@ data:
 tasks:
   seg:
     enabled: true
-    data_root: data/wheat_seg
-    num_classes: 5         # background + 4 organ class（待 B/C 确认）
+    data_root: datasets/raw/segmentation_dataset
+    num_classes: 4         # Background, Head, Stem, Leaf
+    label_subdir: class_id
+    classes: [Background, Head, Stem, Leaf]
   det:
     enabled: true
-    data_root: data/wheat_det
-    num_classes: 1         # 只检测麦穗一类
+    data_root: datasets/raw/detect_dataset
+    num_classes: 1         # 麦穗单类
+    fmt: yolo              # labels/*.txt: class cx cy w h (normalized)
   cnt:
     enabled: true
-    data_root: data/wheat_cnt
+    data_root: datasets/raw/count_dataset
+    anno_fmt: voc_xml      # 叶尖计数 (Wheat Leaf Tip Counting); 每个 object<name=tip>, bbox 作为点标注 (取中心)
+    target_repr: point_from_bbox_center
+    semantics: leaf_tip
   cls:
     enabled: true
-    data_root: data/wheat_cls
-    num_classes: 8         # 待 E 确认数据集类别数
+    data_root: datasets/raw/classification_dataset
+    num_classes: 6         # 生育期 6 类: Tillering/Jointing/BH/Flowering/Filling/Ripening
+    semantics: growth_stage
+    classes: [1_Tillering, 2_Jointing, 3_BH, 4_Flowering, 5_Filling, 6_Ripening]
 
 loss:
   weighting: uncertainty   # uniform | dwa | uncertainty

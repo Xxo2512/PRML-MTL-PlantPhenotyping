@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, Optional
 
 import torch
 import torch.nn as nn
@@ -35,15 +35,22 @@ class TADFormerModel(MTLModel):
     block integration lands.
     """
 
-    def __init__(self, cfg: Dict, backbone: nn.Module, heads: Dict[str, nn.Module]):
-        super().__init__(backbone=backbone, heads=heads)
-        model_cfg = cfg.get("model", {})
-        tad_cfg = model_cfg.get("tadformer", {})
-        self.tasks = tuple(task for task in cfg.get("tasks", {}) if cfg["tasks"][task].get("enabled", True))
-        self.task_dim = int(tad_cfg.get("task_dim", 64))
-        self.per_stage = bool(tad_cfg.get("per_stage", True))
+    def __init__(
+        self,
+        cfg: Dict,
+        backbone: Optional[nn.Module] = None,
+        heads: Optional[Dict[str, nn.Module]] = None,
+    ):
+        super().__init__(cfg=cfg, backbone=backbone, heads=heads)
+        model_cfg = self._get(cfg, "model", {})
+        tad_cfg = self._get(model_cfg, "tadformer", {})
+        self.tasks = tuple(
+            task for task in ("seg", "det", "cnt", "cls") if self._get(cfg, f"tasks.{task}.enabled", True)
+        )
+        self.task_dim = int(self._get(tad_cfg, "task_dim", 64))
+        self.per_stage = bool(self._get(tad_cfg, "per_stage", True))
 
-        out_channels: Iterable[int] = getattr(backbone, "out_channels", [96, 192, 384, 768])
+        out_channels: Iterable[int] = getattr(self.backbone, "out_channels", [96, 192, 384, 768])
         self.task_embeddings = nn.ModuleDict(
             {task: nn.Embedding(1, self.task_dim) for task in self.tasks}
         )
@@ -58,7 +65,7 @@ class TADFormerModel(MTLModel):
                 for task in self.tasks
             }
         )
-        if model_cfg.get("freeze_backbone", False):
+        if self._get(model_cfg, "freeze_backbone", False):
             self._freeze_backbone()
 
     def forward(self, batch: Dict[str, Dict]) -> Dict[str, Dict]:
@@ -77,3 +84,15 @@ class TADFormerModel(MTLModel):
     def _freeze_backbone(self) -> None:
         for param in self.backbone.parameters():
             param.requires_grad = False
+
+    @staticmethod
+    def _get(obj, path: str, default=None):
+        cur = obj
+        for key in path.split("."):
+            if isinstance(cur, dict):
+                cur = cur.get(key, default)
+            else:
+                cur = getattr(cur, key, default)
+            if cur is default:
+                break
+        return cur

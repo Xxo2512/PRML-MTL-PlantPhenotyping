@@ -10,38 +10,40 @@ from .base import BaseTaskHead
 
 
 class FCOSDetectionHead(BaseTaskHead):
-    """A compact FCOS-style head that satisfies the project head contract.
-
-    It is intentionally lightweight for W13 smoke training: classification,
-    box regression, and centerness are supervised at feature-map cells that
-    contain ground-truth box centers.
-    """
+    """A compact FCOS-style head for W13 smoke training."""
 
     task = "det"
 
     def __init__(
         self,
-        in_channels: List[Optional[int]],
+        in_channels: Optional[List[Optional[int]]] = None,
         num_classes: int = 1,
         feat_key: str = "s3",
         hidden_dim: int = 128,
         score_thresh: float = 0.05,
         topk: int = 100,
+        in_dim: Optional[int] = None,
+        stride: Optional[int] = None,
+        input_size: int = 384,
+        dim: Optional[int] = None,
     ):
         super().__init__()
-        self.in_channels = in_channels
+        if dim is not None:
+            hidden_dim = dim
+        self.in_channels = in_channels or [96, 192, 384, 768]
         self.num_classes = num_classes
         self.feat_key = feat_key
         self.score_thresh = score_thresh
         self.topk = topk
+        self.input_size = input_size
 
         stage_index = int(feat_key[-1]) - 1
-        in_dim = in_channels[stage_index]
-        if in_dim is None:
+        channels = in_dim if in_dim is not None else self.in_channels[stage_index]
+        if channels is None:
             raise ValueError(f"{feat_key} channel cannot be None for FCOSDetectionHead")
 
         self.stem = nn.Sequential(
-            nn.Conv2d(in_dim, hidden_dim, kernel_size=3, padding=1),
+            nn.Conv2d(channels, hidden_dim, kernel_size=3, padding=1),
             nn.GroupNorm(8, hidden_dim),
             nn.ReLU(inplace=True),
             nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
@@ -78,13 +80,15 @@ class FCOSDetectionHead(BaseTaskHead):
         reg_target = torch.zeros((batch_size, 4, height, width), device=device)
         reg_mask = torch.zeros((batch_size, 1, height, width), device=device)
 
-        stride_y = 384.0 / height
-        stride_x = 384.0 / width
+        stride_y = self.input_size / height
+        stride_x = self.input_size / width
         boxes_per_image = targets["boxes"]
         for b_idx, boxes in enumerate(boxes_per_image):
             boxes = boxes.to(device=device, dtype=torch.float32)
             if boxes.numel() == 0:
                 continue
+            if boxes.max() <= 1.5:
+                boxes = boxes * self.input_size
             centers_x = ((boxes[:, 0] + boxes[:, 2]) * 0.5 / stride_x).long().clamp(0, width - 1)
             centers_y = ((boxes[:, 1] + boxes[:, 3]) * 0.5 / stride_y).long().clamp(0, height - 1)
             for box, cx, cy in zip(boxes, centers_x, centers_y):
@@ -127,8 +131,8 @@ class FCOSDetectionHead(BaseTaskHead):
 
         ys = torch.div(top_idx, width, rounding_mode="floor").float()
         xs = (top_idx % width).float()
-        stride_y = 384.0 / height
-        stride_x = 384.0 / width
+        stride_y = self.input_size / height
+        stride_x = self.input_size / width
         px = (xs + 0.5) * stride_x
         py = (ys + 0.5) * stride_y
 
@@ -137,6 +141,12 @@ class FCOSDetectionHead(BaseTaskHead):
         boxes = torch.stack(
             [px - reg[..., 0], py - reg[..., 1], px + reg[..., 2], py + reg[..., 3]],
             dim=-1,
-        ).clamp(min=0.0, max=384.0)
+        ).clamp(min=0.0, max=float(self.input_size))
         labels = torch.ones_like(top_scores, dtype=torch.long, device=device)
         return {"boxes": boxes, "scores": top_scores, "labels": labels}
+
+
+class DetHead(FCOSDetectionHead):
+    """Main-line compatible detection head name."""
+
+    in_channels: List[Optional[int]] = [96, 192, 384, 768]

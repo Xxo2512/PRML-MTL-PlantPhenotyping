@@ -8,3 +8,4 @@ matplotlib
 tensorboard
 timm
 einops
+scipy

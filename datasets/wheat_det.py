@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
+import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
@@ -21,12 +22,15 @@ class WheatDetectionDataset(Dataset):
         root: str | Path,
         split: str = "train",
         transform: Optional[InputAdapter] = None,
+        train: Optional[bool] = None,
     ):
         self.root = Path(root)
         if self.root.name != "detect_dataset" and (self.root / "detect_dataset").exists():
             self.root = self.root / "detect_dataset"
         self.split = split
         self.transform = transform
+        if self.transform is None and train is not None:
+            self.transform = InputAdapter("det", train=train)
 
         self.image_dir = self.root / "images" / split
         self.label_dir = self.root / "labels" / split
@@ -81,3 +85,21 @@ class WheatDetectionDataset(Dataset):
         boxes = np.asarray(rows, dtype=np.float32).reshape(-1, 4)
         labels_arr = np.asarray(labels, dtype=np.int64)
         return boxes, labels_arr
+
+    @staticmethod
+    def collate_fn(batch):
+        return {
+            "image": torch.stack([item["image"] for item in batch]),
+            "targets": {
+                "boxes": [item["targets"]["boxes"] for item in batch],
+                "labels": [item["targets"]["labels"] for item in batch],
+            },
+            "meta": [item.get("meta", {}) for item in batch],
+        }
+
+
+class WheatHeadDetDataset(WheatDetectionDataset):
+    """Main-line compatible name for the detection dataset."""
+
+    def __init__(self, root: str | Path, split: str, train: bool):
+        super().__init__(root=root, split=split, transform=InputAdapter("det", train=train))
