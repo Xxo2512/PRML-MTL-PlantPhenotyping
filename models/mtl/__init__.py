@@ -1,3 +1,4 @@
 from .base import MTLModel, VanillaMTL, build_mtl_model
+from .tadformer import TADFormerModel
 
-__all__ = ['MTLModel', 'VanillaMTL', 'build_mtl_model']
+__all__ = ["MTLModel", "TADFormerModel", "VanillaMTL", "build_mtl_model"]
