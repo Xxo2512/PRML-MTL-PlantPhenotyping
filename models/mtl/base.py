@@ -61,4 +61,8 @@ def build_mtl_model(cfg) -> MTLModel:
         from .tadformer import TADFormerModel
 
         return TADFormerModel(cfg=cfg)
+    if cfg.method == "pgt":
+        from .pgt import PGTModel
+
+        return PGTModel(cfg=cfg)
     raise NotImplementedError(f"method {cfg.method!r} not yet implemented")
