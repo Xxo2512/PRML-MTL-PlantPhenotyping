@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
-import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
@@ -86,20 +85,9 @@ class WheatDetectionDataset(Dataset):
         labels_arr = np.asarray(labels, dtype=np.int64)
         return boxes, labels_arr
 
-    @staticmethod
-    def collate_fn(batch):
-        return {
-            "image": torch.stack([item["image"] for item in batch]),
-            "targets": {
-                "boxes": [item["targets"]["boxes"] for item in batch],
-                "labels": [item["targets"]["labels"] for item in batch],
-            },
-            "meta": [item.get("meta", {}) for item in batch],
-        }
-
 
 class WheatHeadDetDataset(WheatDetectionDataset):
-    """Main-line compatible name for the detection dataset."""
+    """Backward-compat alias; collate is handled by utils.collate.task_collate."""
 
     def __init__(self, root: str | Path, split: str, train: bool):
         super().__init__(root=root, split=split, transform=InputAdapter("det", train=train))

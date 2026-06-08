@@ -103,9 +103,10 @@ count_dataset/
 - `bndbox` 是叶尖周围的一个小框，**实际作为点标注使用**：取 `(cx, cy) = ((xmin+xmax)/2, (ymin+ymax)/2)`
 
 ### Loader 行为（[`datasets/wheat_cnt.py`](../datasets/wheat_cnt.py)）
-1. `_parse_voc_xml` 把每个 object 的 bbox 中心转点
-2. `_gaussian_density` 在 stride=8 的低分辨密度图（48×48）上撒高斯（σ=2）
-3. 返回 `{image: [3,384,384], density: [48,48], count: scalar}`
+1. `_parse_voc_xml` 把每个 object 的 bbox 中心转点 (原图像素坐标)
+2. 仅返回 raw `{image_path, image_pil, points: [N,2], count: int}`
+3. 后接 `InputAdapter('cnt', train)` 做 keep-ratio resize + 像素坐标重缩放
+4. **density-map 计算下沉到 cnt head**（[`models/heads/cnt_pet.py`](../models/heads/cnt_pet.py)）：head 用 `targets['points']` 在 `stride=8` 的特征网格 (48×48) 上撒高斯 (σ=2) 现算 GT density
 
 ---
 
