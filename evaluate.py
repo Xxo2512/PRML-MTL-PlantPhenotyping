@@ -49,7 +49,7 @@ def main():
     print(f'[data] val: ' + ', '.join(f'{t}={len(l.dataset)}' for t, l in val_loaders.items()))
 
     t0 = time.time()
-    flat = evaluate_model(model, val_loaders, cfg, device)
+    flat = evaluate_model(model, val_loaders, device)
     dt = time.time() - t0
     print(f'[eval] done in {dt:.1f}s')
     print('-' * 60)
