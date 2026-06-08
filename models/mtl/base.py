@@ -65,4 +65,8 @@ def build_mtl_model(cfg) -> MTLModel:
         from .pgt import PGTModel
 
         return PGTModel(cfg=cfg)
+    if cfg.method == "ditask":
+        from .ditask import DiTASKModel
+
+        return DiTASKModel(cfg=cfg)
     raise NotImplementedError(f"method {cfg.method!r} not yet implemented")
