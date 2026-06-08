@@ -39,6 +39,7 @@ models/
 utils/
   metrics.py               # D
   losses.py                # A: loss aggregator (uniform/dwa/uncertainty)
+  collate.py               # B: task_collate(batch, task)
   visualize.py             # C
   logger.py                # E
 ```
@@ -70,7 +71,7 @@ class SwinBackbone(nn.Module):
 ```python
 # datasets/input_adapter.py
 class InputAdapter:
-    def __init__(self, task: str, train: bool): ...
+    def __init__(self, task: str, train: bool, input_size: int = 384): ...
     def __call__(self, sample: Dict) -> Dict:
         ...
 ```
@@ -80,20 +81,26 @@ class InputAdapter:
   - 公共字段：`image_path: str`、`image_pil: PIL.Image`
   - 任务字段：
     - seg → `mask: np.ndarray [H, W] uint8`
-    - det → `boxes: np.ndarray [N, 4] (x1,y1,x2,y2)`, `labels: np.ndarray [N]`
-    - cnt → `points: np.ndarray [N, 2]`, `count: int`
+    - det → `boxes: np.ndarray [N, 4] (x1,y1,x2,y2) 原图像素坐标`、`labels: np.ndarray [N] int64`（0=background, ≥1=foreground）
+    - cnt → `points: np.ndarray [N, 2] 原图像素坐标`、`count: int`
     - cls → `label: int`
 
 **输出**：
 ```python
 {
-    'image':   Tensor[3, 384, 384],          # 已归一化
+    'image':   Tensor[3, 384, 384],          # 已归一化 (ImageNet mean/std)
     'targets': <task-specific tensor dict>,
-    'meta':    {'orig_size': (H, W), 'task': str}
+    'meta':    {'image_path': str, 'orig_size': (H, W), 'task': str}
 }
 ```
 
-**collate**：dataloader 用 `utils.collate.task_collate(batch, task)` 把上面 dict 合 batch。
+**坐标空间约定**：
+- det 输出 `targets['boxes']` 已经过 keep-ratio resize + pad，取值 `[0, input_size]` 像素；`targets['labels']` 长度与 boxes 同步。
+- cnt 输出 `targets['points']` 已缩到 `[0, input_size)` 像素；`targets['count']` 是标量 float tensor。
+- seg 输出 `targets['mask']` 是 `[input_size, input_size] long` (NEAREST resize)。
+- cls 输出 `targets['label']` 是标量 long tensor。
+
+**collate**：dataloader 用 `utils.collate.task_collate(batch, task)` 把上面 dict 合 batch。变长目标 (det boxes/labels, cnt points) 保留为 list，其余 stack。`meta` 透传为 list-of-dict。
 
 ---
 
@@ -129,7 +136,7 @@ class BaseTaskHead(nn.Module, ABC):
 |---|---|
 | seg_dpt | `logits: [B, C, 384, 384]` |
 | det_fcos | `boxes: [B, N, 4]`, `scores: [B, N]`, `labels: [B, N]` (after NMS) |
-| cnt_pet | `points: [B, N, 2]`, `count: [B]` |
+| cnt_pet | **W13**: `density: [B, 1, H', W']`, `count: [B]` (head 内部从 `targets['points']` 现算 GT density, 不暴露在 dataset/adapter 接口); **W14** 切到 PET point-query 时升级为 `points: [B, N, 2]`, `count: [B]` |
 | cls_mlp | `logits: [B, C]` |
 
 ---
@@ -240,10 +247,29 @@ data:
   proportional_alpha: 0.5   # 仅 ps 用
 
 tasks:
-  seg: { enabled: true, data_root: data/wheat_seg, num_classes: 5 }
-  det: { enabled: true, data_root: data/wheat_det, num_classes: 1 }
-  cnt: { enabled: true, data_root: data/wheat_cnt }
-  cls: { enabled: true, data_root: data/wheat_cls, num_classes: 8 }
+  seg:
+    enabled: true
+    data_root: datasets/raw/segmentation_dataset
+    num_classes: 4               # Background, Head, Stem, Leaf
+    label_subdir: class_id
+    classes: [Background, Head, Stem, Leaf]
+  det:
+    enabled: true
+    data_root: datasets/raw/detect_dataset
+    num_classes: 1               # 麦穗单类 (label index = 1; 0 留给 background)
+    fmt: yolo
+  cnt:
+    enabled: true
+    data_root: datasets/raw/count_dataset
+    anno_fmt: voc_xml            # 叶尖计数, bbox 中心作为点标注
+    target_repr: point_from_bbox_center
+    semantics: leaf_tip
+  cls:
+    enabled: true
+    data_root: datasets/raw/classification_dataset
+    num_classes: 6               # 生育期 6 类 (与原指导书的"病害分类 8 类"不同, 已确认)
+    semantics: growth_stage
+    classes: [1_Tillering, 2_Jointing, 3_BH, 4_Flowering, 5_Filling, 6_Ripening]
 
 loss:
   weighting: uncertainty    # uniform | dwa | uncertainty
