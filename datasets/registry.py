@@ -1,42 +1,108 @@
-"""任务键、dataset/loader 工厂、单一入口。"""
 from __future__ import annotations
+
+from functools import partial
+from pathlib import Path
 from typing import Dict
-import torch
+
 from torch.utils.data import DataLoader
 
-TASKS = ('seg', 'det', 'cnt', 'cls')   # 顺序固定
+from utils.collate import task_collate
+
+from .input_adapter import InputAdapter
+from .wheat_det import WheatDetectionDataset, WheatHeadDetDataset
 
 
-def build_dataset(task: str, split: str, cfg):
-    """根据任务名分发到具体 Dataset。split: 'train' | 'val' | 'test'。"""
-    if task == 'cls':
+TASKS = ("seg", "det", "cnt", "cls")
+
+
+def _cfg_get(cfg, path: str, default=None):
+    cur = cfg
+    for key in path.split("."):
+        try:
+            cur = cur[key]
+        except (KeyError, TypeError):
+            cur = getattr(cur, key, default)
+        if cur is default:
+            break
+    return cur
+
+
+def build_dataset(task: str, *args, split: str = "train", cfg=None):
+    """Build a task dataset.
+
+    Supports both call styles used across the branch history:
+    `build_dataset(task, cfg, split='train')` and
+    `build_dataset(task, split, cfg)`.
+    """
+
+    if cfg is None:
+        if len(args) == 1:
+            cfg = args[0]
+        elif len(args) >= 2:
+            split = args[0]
+            cfg = args[1]
+        else:
+            raise TypeError("build_dataset requires cfg")
+
+    if task == "cls":
         from .wheat_cls import WheatGrowthStageDataset
-        return WheatGrowthStageDataset(cfg.tasks.cls.data_root, split, train=(split == 'train'))
-    if task == 'seg':
+
+        return WheatGrowthStageDataset(_cfg_get(cfg, "tasks.cls.data_root"), split, train=(split == "train"))
+    if task == "seg":
         from .wheat_seg import WheatOrganSegDataset
-        return WheatOrganSegDataset(cfg.tasks.seg.data_root, split, train=(split == 'train'))
-    if task == 'det':
-        from .wheat_det import WheatHeadDetDataset
-        return WheatHeadDetDataset(cfg.tasks.det.data_root, split, train=(split == 'train'))
-    if task == 'cnt':
+
+        return WheatOrganSegDataset(_cfg_get(cfg, "tasks.seg.data_root"), split, train=(split == "train"))
+    if task == "det":
+        root = Path(_cfg_get(cfg, "tasks.det.data_root"))
+        adapter = InputAdapter(
+            task="det",
+            train=(split == "train"),
+            input_size=int(_cfg_get(cfg, "model.input_size", 384)),
+        )
+        return WheatDetectionDataset(root=root, split=split, transform=adapter)
+    if task == "cnt":
         from .wheat_cnt import WheatCountDataset
-        return WheatCountDataset(cfg.tasks.cnt.data_root, split, train=(split == 'train'))
+
+        return WheatCountDataset(_cfg_get(cfg, "tasks.cnt.data_root"), split, train=(split == "train"))
     raise ValueError(task)
 
 
-def build_loader(task: str, split: str, cfg) -> DataLoader:
-    ds = build_dataset(task, split, cfg)
-    bs = cfg.data.batch_per_task
+def build_loader(task: str, *args, split: str = "train", cfg=None) -> DataLoader:
+    if cfg is None:
+        if len(args) == 1:
+            cfg = args[0]
+        elif len(args) >= 2:
+            split = args[0]
+            cfg = args[1]
+        else:
+            raise TypeError("build_loader requires cfg")
+
+    dataset = build_dataset(task, split, cfg)
+    collate_fn = getattr(dataset, "collate_fn", partial(task_collate, task=task))
     return DataLoader(
-        ds,
-        batch_size=bs,
-        shuffle=(split == 'train'),
-        num_workers=cfg.data.num_workers,
-        collate_fn=ds.collate_fn,
+        dataset,
+        batch_size=int(_cfg_get(cfg, "data.batch_per_task", 8)),
+        shuffle=(split == "train"),
+        num_workers=int(_cfg_get(cfg, "data.num_workers", 0)),
+        collate_fn=collate_fn,
         pin_memory=True,
-        drop_last=(split == 'train'),
+        drop_last=(split == "train"),
     )
 
 
-def build_all_loaders(cfg, split: str = 'train') -> Dict[str, DataLoader]:
-    return {t: build_loader(t, split, cfg) for t in TASKS if cfg.tasks[t].enabled}
+def build_all_loaders(cfg, split: str = "train") -> Dict[str, DataLoader]:
+    return {
+        task: build_loader(task, split, cfg)
+        for task in TASKS
+        if bool(_cfg_get(cfg, f"tasks.{task}.enabled", True))
+    }
+
+
+__all__ = [
+    "TASKS",
+    "WheatDetectionDataset",
+    "WheatHeadDetDataset",
+    "build_dataset",
+    "build_loader",
+    "build_all_loaders",
+]

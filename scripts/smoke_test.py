@@ -18,6 +18,8 @@ def main():
     # CPU smoke: bs 极小, 只装 4 个任务每个 1 batch
     cfg.data.batch_per_task = 1
     cfg.data.num_workers = 0
+    cfg.model.pretrained = ''
+    cfg.model.pretrained_flag = False
     cfg.train.lr = 1e-4
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

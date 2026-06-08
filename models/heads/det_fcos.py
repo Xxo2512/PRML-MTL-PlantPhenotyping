@@ -1,77 +1,152 @@
-"""检测 head (W13 占位简化版, W14 替换为完整 FCOS)。
-
-数学（简化）:
-  在 stride=8 的 feature 上预测:
-    obj : [B, 1, H, W]   sigmoid -> 是否目标中心
-    reg : [B, 4, H, W]   ltrb 距离 (相对于该位置)
-  loss = BCE(obj, gt_center_heatmap) + L1(reg, gt_ltrb) on positive locations
-  gt_center_heatmap[y, x] = 1 if (x, y) 是某个 box 中心, else 0
-"""
 from __future__ import annotations
+
 from typing import Any, Dict, List, Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 from .base import BaseTaskHead
 
 
-class DetHead(BaseTaskHead):
-    task = 'det'
-    in_channels: List[Optional[int]] = [None, 192, None, None]   # 用 s2 (stride 8)
+class FCOSDetectionHead(BaseTaskHead):
+    """A compact FCOS-style head for W13 smoke training."""
 
-    def __init__(self, in_dim: int = 192, dim: int = 128, stride: int = 8, input_size: int = 384):
+    task = "det"
+
+    def __init__(
+        self,
+        in_channels: Optional[List[Optional[int]]] = None,
+        num_classes: int = 1,
+        feat_key: str = "s3",
+        hidden_dim: int = 128,
+        score_thresh: float = 0.05,
+        topk: int = 100,
+        in_dim: Optional[int] = None,
+        stride: Optional[int] = None,
+        input_size: int = 384,
+        dim: Optional[int] = None,
+    ):
         super().__init__()
-        self.stride = stride
+        if dim is not None:
+            hidden_dim = dim
+        self.in_channels = in_channels or [96, 192, 384, 768]
+        self.num_classes = num_classes
+        self.feat_key = feat_key
+        self.score_thresh = score_thresh
+        self.topk = topk
         self.input_size = input_size
-        self.conv = nn.Sequential(
-            nn.Conv2d(in_dim, dim, 3, padding=1), nn.GroupNorm(8, dim), nn.GELU(),
-            nn.Conv2d(dim, dim, 3, padding=1), nn.GroupNorm(8, dim), nn.GELU(),
-        )
-        self.obj = nn.Conv2d(dim, 1, 1)
-        self.reg = nn.Conv2d(dim, 4, 1)
 
-    def _build_targets(self, boxes_list, H, W, device):
-        """boxes: list of [N_i, 4] in normalized [0,1] xyxy。返回 obj_map[B,1,H,W] 与 reg_map[B,4,H,W]。"""
-        B = len(boxes_list)
-        obj = torch.zeros(B, 1, H, W, device=device)
-        reg = torch.zeros(B, 4, H, W, device=device)
-        for b, boxes in enumerate(boxes_list):
+        stage_index = int(feat_key[-1]) - 1
+        channels = in_dim if in_dim is not None else self.in_channels[stage_index]
+        if channels is None:
+            raise ValueError(f"{feat_key} channel cannot be None for FCOSDetectionHead")
+
+        self.stem = nn.Sequential(
+            nn.Conv2d(channels, hidden_dim, kernel_size=3, padding=1),
+            nn.GroupNorm(8, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+            nn.GroupNorm(8, hidden_dim),
+            nn.ReLU(inplace=True),
+        )
+        self.cls_logits = nn.Conv2d(hidden_dim, num_classes, kernel_size=3, padding=1)
+        self.bbox_reg = nn.Conv2d(hidden_dim, 4, kernel_size=3, padding=1)
+        self.centerness = nn.Conv2d(hidden_dim, 1, kernel_size=3, padding=1)
+
+    def forward(self, feats: Dict[str, torch.Tensor], targets=None) -> Dict[str, Any]:
+        feat = feats[self.feat_key]
+        hidden = self.stem(feat)
+        cls_logits = self.cls_logits(hidden)
+        bbox_reg = F.softplus(self.bbox_reg(hidden))
+        centerness = self.centerness(hidden)
+
+        pred = self._decode(cls_logits, bbox_reg, centerness)
+        if self.training and targets is not None:
+            loss, loss_items = self._loss(cls_logits, bbox_reg, centerness, targets)
+            return {"loss": loss, "loss_items": loss_items, "pred": pred}
+        return {"pred": pred, "metric": {}}
+
+    def _loss(
+        self,
+        cls_logits: torch.Tensor,
+        bbox_reg: torch.Tensor,
+        centerness: torch.Tensor,
+        targets: Dict,
+    ) -> tuple[torch.Tensor, Dict[str, float]]:
+        batch_size, _, height, width = cls_logits.shape
+        device = cls_logits.device
+        obj_target = torch.zeros((batch_size, 1, height, width), device=device)
+        reg_target = torch.zeros((batch_size, 4, height, width), device=device)
+        reg_mask = torch.zeros((batch_size, 1, height, width), device=device)
+
+        stride_y = self.input_size / height
+        stride_x = self.input_size / width
+        boxes_per_image = targets["boxes"]
+        for b_idx, boxes in enumerate(boxes_per_image):
+            boxes = boxes.to(device=device, dtype=torch.float32)
             if boxes.numel() == 0:
                 continue
-            # 转到 feature 坐标
-            cx = ((boxes[:, 0] + boxes[:, 2]) / 2 * W).clamp(0, W - 1)
-            cy = ((boxes[:, 1] + boxes[:, 3]) / 2 * H).clamp(0, H - 1)
-            xs = cx.long(); ys = cy.long()
-            obj[b, 0, ys, xs] = 1.0
-            # ltrb in feature units
-            l = (cx - boxes[:, 0] * W)
-            t = (cy - boxes[:, 1] * H)
-            r = (boxes[:, 2] * W - cx)
-            d = (boxes[:, 3] * H - cy)
-            for k in range(boxes.size(0)):
-                reg[b, 0, ys[k], xs[k]] = l[k]
-                reg[b, 1, ys[k], xs[k]] = t[k]
-                reg[b, 2, ys[k], xs[k]] = r[k]
-                reg[b, 3, ys[k], xs[k]] = d[k]
-        return obj, reg
+            if boxes.max() <= 1.5:
+                boxes = boxes * self.input_size
+            centers_x = ((boxes[:, 0] + boxes[:, 2]) * 0.5 / stride_x).long().clamp(0, width - 1)
+            centers_y = ((boxes[:, 1] + boxes[:, 3]) * 0.5 / stride_y).long().clamp(0, height - 1)
+            for box, cx, cy in zip(boxes, centers_x, centers_y):
+                px = (cx.float() + 0.5) * stride_x
+                py = (cy.float() + 0.5) * stride_y
+                reg_target[b_idx, :, cy, cx] = torch.stack(
+                    [px - box[0], py - box[1], box[2] - px, box[3] - py]
+                ).clamp(min=0.0)
+                obj_target[b_idx, :, cy, cx] = 1.0
+                reg_mask[b_idx, :, cy, cx] = 1.0
 
-    def forward(self, feats: Dict[str, torch.Tensor], targets: Optional[Dict[str, Any]] = None):
-        f = self.conv(feats['s2'])
-        obj_logit = self.obj(f)
-        reg = F.relu(self.reg(f))
-        out = {'pred': {'obj_logit': obj_logit, 'reg': reg}}
-        if targets is not None and 'boxes' in targets:
-            B, _, H, W = obj_logit.shape
-            boxes_list = [b.to(obj_logit.device) for b in targets['boxes']]
-            obj_gt, reg_gt = self._build_targets(boxes_list, H, W, obj_logit.device)
-            obj_loss = F.binary_cross_entropy_with_logits(obj_logit, obj_gt)
-            mask = obj_gt > 0
-            if mask.any():
-                reg_loss = F.l1_loss(reg[mask.expand_as(reg)], reg_gt[mask.expand_as(reg_gt)])
-            else:
-                reg_loss = obj_logit.new_zeros(())
-            loss = obj_loss + 0.1 * reg_loss
-            out['loss'] = loss
-            out['loss_items'] = {'det/obj': obj_loss.detach().item(),
-                                 'det/reg': reg_loss.detach().item()}
-        return out
+        cls_loss = F.binary_cross_entropy_with_logits(cls_logits[:, :1], obj_target)
+        center_loss = F.binary_cross_entropy_with_logits(centerness, obj_target)
+        if reg_mask.sum() > 0:
+            reg_loss = F.l1_loss(bbox_reg * reg_mask, reg_target * reg_mask, reduction="sum")
+            reg_loss = reg_loss / reg_mask.sum().clamp_min(1.0)
+        else:
+            reg_loss = bbox_reg.sum() * 0.0
+        loss = cls_loss + reg_loss + 0.5 * center_loss
+        return (
+            loss,
+            {
+                "det/cls": float(cls_loss.detach().cpu()),
+                "det/reg": float(reg_loss.detach().cpu()),
+                "det/centerness": float(center_loss.detach().cpu()),
+            },
+        )
+
+    def _decode(
+        self,
+        cls_logits: torch.Tensor,
+        bbox_reg: torch.Tensor,
+        centerness: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        batch_size, _, height, width = cls_logits.shape
+        device = cls_logits.device
+        scores = (cls_logits[:, :1].sigmoid() * centerness.sigmoid()).flatten(1)
+        k = min(self.topk, scores.shape[1])
+        top_scores, top_idx = scores.topk(k, dim=1)
+
+        ys = torch.div(top_idx, width, rounding_mode="floor").float()
+        xs = (top_idx % width).float()
+        stride_y = self.input_size / height
+        stride_x = self.input_size / width
+        px = (xs + 0.5) * stride_x
+        py = (ys + 0.5) * stride_y
+
+        reg = bbox_reg.permute(0, 2, 3, 1).reshape(batch_size, -1, 4)
+        reg = torch.gather(reg, 1, top_idx.unsqueeze(-1).expand(-1, -1, 4))
+        boxes = torch.stack(
+            [px - reg[..., 0], py - reg[..., 1], px + reg[..., 2], py + reg[..., 3]],
+            dim=-1,
+        ).clamp(min=0.0, max=float(self.input_size))
+        labels = torch.ones_like(top_scores, dtype=torch.long, device=device)
+        return {"boxes": boxes, "scores": top_scores, "labels": labels}
+
+
+class DetHead(FCOSDetectionHead):
+    """Main-line compatible detection head name."""
+
+    in_channels: List[Optional[int]] = [96, 192, 384, 768]

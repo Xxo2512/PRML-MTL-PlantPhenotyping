@@ -1,2 +1,12 @@
-from .mtl import build_mtl_model
-__all__ = ['build_mtl_model']
+from .heads import BaseTaskHead, DetHead, FCOSDetectionHead
+from .mtl import MTLModel, TADFormerModel, VanillaMTL, build_mtl_model
+
+__all__ = [
+    "BaseTaskHead",
+    "DetHead",
+    "FCOSDetectionHead",
+    "MTLModel",
+    "TADFormerModel",
+    "VanillaMTL",
+    "build_mtl_model",
+]
