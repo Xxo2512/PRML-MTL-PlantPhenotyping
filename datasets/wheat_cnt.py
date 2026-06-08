@@ -2,12 +2,7 @@
 
 数据集格式: Pascal VOC XML, 每张图一个 .xml,
   <object><name>tip</name><bndbox><xmin/><ymin/><xmax/><ymax/></bndbox></object>
-老师说: 这些 bbox 是 *点标注* (叶尖周围的小框), 取 bbox 中心作为 point。
 
-Density map 数学:
-  对每个点 (x_i, y_i), 在 H'×W' 的低分辨 density 上撒高斯:
-    D(u,v) = Σ_i G_σ(u - x_i', v - y_i')
-  count = sum(D)。head 学回归 D, MAE/RMSE 在 sum 上算。
 """
 from __future__ import annotations
 import os
