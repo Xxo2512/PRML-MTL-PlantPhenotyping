@@ -21,85 +21,97 @@
 
 ---
 
-## 阶段 II 进度（W13W14，进行中）
+## 阶段 II 进度（W13–W15）
 
-### 已完成 (A)
+### 已完成
 
-| 模块 | 路径 | 说明 |
-|---|---|---|
-| 4 个 Dataset | [`datasets/wheat_{cls,seg,det,cnt}.py`](datasets/) | cls=ImageFolder, seg=mask PNG, det=YOLO txt, cnt=VOC XML (叶尖) |
-| InputAdapter | [`datasets/input_adapter.py`](datasets/input_adapter.py) | 4 任务统一归一化到 `[3,384,384]`，keep-ratio resize + 同步 box/point 变换 |
-| CrossDatasetSampler | [`datasets/cross_dataset.py`](datasets/cross_dataset.py) | RR / PS (α=0.5) / HM 三种调度 |
-| Swin-T Backbone | [`models/backbone/swin.py`](models/backbone/swin.py) | timm `swin_tiny_patch4_window7_224`，自动走 hf-mirror |
-| 4 个 Task Head（占位简化版） | [`models/heads/`](models/heads/) | cls=GAP+Linear / seg=FPN-lite / det=stride-8 obj+ltrb / cnt=density 回归 |
-| vanilla MTLModel | [`models/mtl/base.py`](models/mtl/base.py) | 共享 backbone + 独立 head，作为后续 MTL 方法对照基线 |
-| LossAggregator | [`utils/losses.py`](utils/losses.py) | `uniform` + Kendall'18 `uncertainty` 可学权重 |
-| Config loader | [`utils/config.py`](utils/config.py) | yaml `_base_` 继承，属性 + 下标双访问 |
-| 训练入口 | [`train.py`](train.py) | smoke / 短训通用，支持 `--steps` / `--epochs` |
-| Smoke test | [`scripts/smoke_test.py`](scripts/smoke_test.py) | 5 step 自检, 验证接口对齐 |
+| 模块 | 路径 | 主笔 | 说明 |
+|---|---|---|---|
+| 4 个 Dataset | [`datasets/wheat_{cls,seg,det,cnt}.py`](datasets/) | A/B | cls=ImageFolder, seg=mask PNG, det=YOLO txt, cnt=VOC XML (叶尖) |
+| InputAdapter | [`datasets/input_adapter.py`](datasets/input_adapter.py) | A | 4 任务统一归一化到 `[3,384,384]`，keep-ratio resize + 同步 box/point 变换 |
+| CrossDatasetSampler | [`datasets/cross_dataset.py`](datasets/cross_dataset.py) | A | RR / PS (α=0.5) / HM 三种调度 |
+| Swin-T Backbone | [`models/backbone/swin.py`](models/backbone/swin.py) | A | timm `swin_tiny_patch4_window7_224`，自动走 hf-mirror |
+| FCOS det head | [`models/heads/det_fcos.py`](models/heads/det_fcos.py) | B | 多尺度 FPN + centerness + Focal/IoU/BCE |
+| DPT seg head | [`models/heads/seg_dpt.py`](models/heads/seg_dpt.py) | C | Reassemble + Fusion blocks，含可视化接口 |
+| PET-style cnt head | [`models/heads/cnt_pet.py`](models/heads/cnt_pet.py) | D | quadtree 划分 + 点查询匈牙利匹配 |
+| MLP / PGT cls head | [`models/heads/cls_mlp.py`](models/heads/cls_mlp.py), [`cls_pgt.py`](models/heads/cls_pgt.py) | E | 支持 ordinal CE（生育期 6 类有序）|
+| vanilla MTLModel | [`models/mtl/base.py`](models/mtl/base.py) | A | 共享 backbone + 独立 head 基线 |
+| **MTLoRA** | [`models/mtl/mtlora.py`](models/mtl/mtlora.py) | A | TA-LoRA + TS-LoRA 注入 Swin 的 qkv/proj/fc1/fc2（48 层 LoRA, rank=16, ~5.65M LoRA 参数）|
+| **TADFormer** | [`models/mtl/tadformer.py`](models/mtl/tadformer.py) | B | 任务嵌入 + 每 block 动态调制 (γ, β) |
+| **DiTASK** | [`models/mtl/ditask.py`](models/mtl/ditask.py) | C | backbone 输出后挂可逆微分同胚映射 Φ_t |
+| **PGT** | [`models/mtl/pgt.py`](models/mtl/pgt.py) | E | 每 block prompt + prompt-guided cross-attention |
+| LossAggregator | [`utils/losses.py`](utils/losses.py) | A | `uniform` + Kendall'18 `uncertainty` 可学权重 |
+| Visualize | [`utils/visualize.py`](utils/visualize.py) | C | seg mask 叠加 / det boxes / cnt 热图 / cls Grad-CAM → TensorBoard |
+| Metrics | [`utils/metrics.py`](utils/metrics.py) | D | seg mIoU/mAcc, det AP/AP50, cnt MAE/RMSE/R², cls mAP/BA |
+| Logger | [`utils/logger.py`](utils/logger.py) | E | TensorBoard + `logs/results.csv` |
+| 训练入口 | [`train.py`](train.py) | A | smoke / 短训 / single-task baseline / 全量 通用；支持 `--tag` / `--single_task` / `--save_every` |
+| 评测入口 | [`evaluate.py`](evaluate.py) | A | 按 ckpt+config 跑 4 任务指标，结果落 `logs/results.csv` |
+| 实验脚本 | [`scripts/run_a_experiments.sh`](scripts/run_a_experiments.sh) | A | 服务器一键 single×4 + vanilla + mtlora 训练+评测 |
 
-### W13 跑通的初步结果（vanilla, 100 step, GPU=RTX 4060 8GB）
+### 待办
 
-**Smoke test (CPU/GPU 通用)**：5 step PASS，4 任务 forward+backward 都能产 loss。
+- M2 (TADFormer) / M3 (DiTASK) / M5 (PGT) 已合入主干，但**尚未进入主表对比训练**（A 的 `run_a_experiments.sh` 当前只覆盖 vanilla + MTLoRA）；W15 末由各方法主笔追加自己的 `run_<x>_experiments.sh`，复用同样的 ckpt/eval 流程。
+- M4 (TaskPrompter) — `models/mtl/taskprompter.py` 尚未实现（D 主笔）。
 
-**短训 100 step, RR 调度, uncertainty 加权**：
-```
-[data] sizes (batches): seg=98, det=450, cnt=188, cls=7631
-[step  0] L=0.70  seg=1.40
-[step 20] L=0.46  seg=0.89  ← seg 单调下降, pipeline OK
-[step 50] L=1.64  cnt=3.28  ← cnt 已正常 (旧 .mat 数据集换成 VOC XML 后)
-[step 90] L=1.98  cnt=3.97
-```
-吞吐 ~3.4 it/s，单 epoch ≈ 37 min。
+### W15 主表实验（运行中 @ AutoDL RTX 4090, 2026-06-16）
 
-**短训 100 step, PS 调度 (α=0.5)**：
-```
-[step  0] L=0.94  cls=1.87
-[step 30] L=0.39  cls=0.78
-[step 40] L=0.16  det=0.31
-[step 50] L=0.48  seg=0.96
-[step 90] L=0.11  det=0.23
-```
-4 任务都见到信号，PS 工作正常。**当前默认调度已切到 `ps`** (`configs/base.yaml`)。
+`bash scripts/run_a_experiments.sh` 当前在跑，输出到 `logs/run_a.log`：
+
+| # | exp tag | config | scope | epochs | 预估 |
+|---|---|---|---|---|---|
+| 1 | `single_seg_5ep` | vanilla.yaml | seg only | 5 | ~25 min |
+| 2 | `single_det_5ep` | vanilla.yaml | det only | 5 | ~50 min |
+| 3 | `single_cnt_5ep` | vanilla.yaml | cnt only | 5 | ~25 min |
+| 4 | `single_cls_5ep` | vanilla.yaml | cls only | 5 | ~2.5 h |
+| 5 | `vanilla_10ep_ps` | vanilla.yaml | 4 任务 PS 调度 | 10 | ~5 h |
+| 6 | `mtlora_20ep_ps` | mtlora.yaml | 4 任务 PS 调度 | 20 | ~10 h |
+
+合计约 18 小时，结果落 `checkpoints/<tag>/last.pt` 与 `logs/results.csv` (8 行)。
+
+### Smoke 验证（2026-06-16, RTX 4090）
+
+`bash scripts/smoke_mtlora.bat`（本地）/ `python train.py --steps 8 --no_save`（服务器）均 PASS：
+
+- **vanilla** (`swin_tiny`, 4 任务, bs_per_task=2)：trainable 39.16M / total 39.16M，~5 it/s
+- **MTLoRA** (`swin_tiny`, 4 任务, bs_per_task=2, rank=16)：注入 48 个 LoRALinear，trainable 17.30M / total 44.81M（backbone 冻结，仅 LoRA + heads），~6 it/s
 
 
 ---
 
-## W13 末 — 各组员 to-do
+## W13–W15 各组员 to-do（截至 2026-06-16）
 
-> 框架已经"通"了，现在每个人在自己负责的 **task head + MTL 方法** 上把"对"做好。两步走：**先升级 head → 再写 MTL 方法**。所有改动走 PR + A review，遵循 [`docs/api_contract.md`](docs/api_contract.md)。
+> 框架已经"通"了，head 升级与各方法实现基本完成；W15 末进入主表训练与消融阶段。所有改动走 PR + A review，遵循 [`docs/api_contract.md`](docs/api_contract.md)。
 
 ### A（组长 / 架构 / MTLoRA）
-- [ ] 写 `evaluate.py`：4 个 metric (cls top-1, seg mIoU, det 简化 IoU/recall, cnt MAE) + best-ckpt 选择 + 写 `logs/results.csv`
-- [ ] 把 vanilla 在 4 任务各跑 5 epoch (single-task baseline) 入表，作为后续所有 MTL 的对照下/上限
-- [ ] 起 W14 第一件事：`models/mtl/mtlora.py` — 在 Swin attn/FFN 上注入 TA-LoRA + TS-LoRA，按 task 路由
+- [x] 写 `evaluate.py`：4 个 metric (cls top-1, seg mIoU, det 简化 IoU/recall, cnt MAE) + 写 `logs/results.csv`
+- [x] 把 vanilla 在 4 任务各跑 5 epoch (single-task baseline) 入表 — `run_a_experiments.sh` 跑全
+- [x] `models/mtl/mtlora.py` — TA-LoRA + TS-LoRA 注入 Swin attn/FFN，48 层 LoRALinear，按 task 路由
+- [ ] best-ckpt 选择（目前只保存 last）
 
 ### B（数据 & 检测 / TADFormer）
-- [ ] 升级 `models/heads/det_fcos.py` 占位版 → 完整 **FCOS** 头（多尺度 FPN + centerness + Focal/IoU/BCE loss + NMS 后处理）
-  - 参考：Tian et al. *FCOS: Fully Convolutional One-Stage Object Detection*, TPAMI 2020
-  - 现版本只在 stride-8 上做单尺度回归，对小麦穗这种密集小目标会漏召回
-- [ ] 在 `utils/metrics.py` 补 **AP / AP50**（用 pycocotools 或自实现 IoU+匹配）
-- [ ] 起 W14：`models/mtl/tadformer.py` — 任务嵌入 + 每 block 动态调制 (γ, β)，需在 `SwinBackbone.forward(x, task=...)` 里挂钩
+- [x] 升级 `models/heads/det_fcos.py` 占位版 → 完整 **FCOS** 头
+- [x] 在 `utils/metrics.py` 补 **AP / AP50**
+- [x] `models/mtl/tadformer.py` — 任务嵌入 + 每 block 动态调制 (γ, β)
+- [ ] 加 `run_b_experiments.sh`：在主表里追加 TADFormer × 4 任务
 
 ### C（分割 & 可视化 / DiTASK）
-- [ ] 升级 `models/heads/seg_dpt.py` FPN-lite → 完整 **DPT** 头（Reassemble + Fusion blocks）
-  - 参考：Ranftl et al. *Vision Transformers for Dense Prediction*, ICCV 2021
-- [ ] 写 `utils/visualize.py`：4 任务可视化工具（seg mask 叠加 / det boxes / cnt density 热图 / cls Grad-CAM），输出到 TensorBoard
-- [ ] 起 W14：`models/mtl/ditask.py` — 在 backbone 输出后挂可逆微分同胚映射 `Φ_t`（每 stage 一份）
+- [x] 升级 `models/heads/seg_dpt.py` FPN-lite → 完整 **DPT** 头 (Reassemble + Fusion blocks)
+- [x] 写 `utils/visualize.py`：4 任务可视化工具 → TensorBoard
+- [x] `models/mtl/ditask.py` — backbone 输出后挂可逆微分同胚映射 `Φ_t`
+- [ ] 加 `run_c_experiments.sh`：在主表里追加 DiTASK × 4 任务
 
 ### D（计数 & 评测 / TaskPrompter）
-- [ ] 升级 `models/heads/cnt_pet.py` density 占位版 → **PET** 风格点查询头（quadtree 划分 + 点查询 Hungarian 匹配）
-  - 参考：Liu et al. *Point-Query Quadtree for Crowd Counting*, ICCV 2023
-- [ ] 在 `utils/metrics.py` 锁死 **统一 metric 模块**：seg mIoU/mAcc, det AP/AP50, cnt MAE/RMSE/R², cls mAP/BA
-- [ ] 起 W14：`models/mtl/taskprompter.py` — 每 block 在 token 序列前拼 spatial prompt + FiLM 风格 channel prompt
+- [x] 升级 `models/heads/cnt_pet.py` density 占位版 → **PET** 风格点查询头
+- [x] 在 `utils/metrics.py` 锁死统一 metric 模块
+- [ ] `models/mtl/taskprompter.py` — 每 block 在 token 序列前拼 spatial prompt + FiLM channel prompt
+- [ ] 加 `run_d_experiments.sh`
 
 ### E（分类 & 部署 / PGT）
-- [ ] cls head 已经够用；但 **加 ordinal CE 选项**（生育期 6 类是有序的，相邻类误分应轻于跨类误分）
-  - 参考：Niu et al. *Ordinal Regression with Multiple Output CNN*, CVPR 2016
-  - 加在 `models/heads/cls_mlp.py`，由 yaml `tasks.cls.loss=ce|ordinal` 切换
-- [ ] 写 `utils/logger.py`：统一 TensorBoard + `logs/results.csv` 写入 + checkpoint 规范（按 `docs/api_contract.md §9`）
-- [ ] 写 `scripts/demo.py`：单图输入 → 4 任务输出（vanilla 即可，W17 升 MTL）
-- [ ] 起 W14：`models/mtl/pgt.py` — 每 block prompt + prompt-guided cross-attention
+- [x] cls head 加 ordinal CE 选项（生育期 6 类有序）→ [`models/heads/cls_pgt.py`](models/heads/cls_pgt.py)
+- [x] 写 `utils/logger.py`：统一 TensorBoard + `logs/results.csv` 写入 + checkpoint 规范
+- [x] `models/mtl/pgt.py` — 每 block prompt + prompt-guided cross-attention
+- [ ] 写 `scripts/demo.py`：单图输入 → 4 任务输出
+- [ ] 加 `run_e_experiments.sh`
 
 ### 协同约定（再次重申）
 - 分支：`feat/<name>-<module>`，PR 合入 `main` 前必须经组长 (A) review
@@ -182,9 +194,9 @@
 - [ ] 输出 `docs/design.md`，提交指导老师审阅 → 修订定稿
 
 ### 阶段 II：算法实现（W13–W15）
-- [ ] **W13** 单任务 baseline：每个 task head 在自己数据集上单独训练跑通，作为后续 MTL 上限/下限对照
-- [ ] **W14** 框架打通：cross-dataset sampler、共享 backbone forward、loss 加权（unweighted / DWA / Uncertainty 三选一作为默认）
-- [ ] **W15** 五方法适配（每人一种）：保持原方法网络结构尽量不变，仅替换/补齐缺失的 4 个 task head；对 Swin tiny/small 预训练权重统一加载
+- [x] **W13** 单任务 baseline：4 任务 head 各自跑通；当前已落 `single_{seg,det,cnt,cls}_5ep` (运行中)
+- [x] **W14** 框架打通：cross-dataset sampler、共享 backbone forward、loss 加权（uniform / uncertainty）
+- [x] **W15** 五方法适配：MTLoRA / TADFormer / DiTASK / PGT 已合入主干；TaskPrompter 待 D 完成
 
 ### 阶段 III：实验与对比（W16–W17）
 - [ ] 主表实验：5 方法 × 4 任务 = 20 组指标，加 4 个单任务 baseline 作 reference
