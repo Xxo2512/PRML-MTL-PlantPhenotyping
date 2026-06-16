@@ -57,6 +57,10 @@ class VanillaMTL(MTLModel):
 def build_mtl_model(cfg) -> MTLModel:
     if cfg.method == "vanilla":
         return VanillaMTL(cfg=cfg)
+    if cfg.method == "mtlora":
+        from .mtlora import MTLoRAModel
+
+        return MTLoRAModel(cfg=cfg)
     if cfg.method == "tadformer":
         from .tadformer import TADFormerModel
 

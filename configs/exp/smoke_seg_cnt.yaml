@@ -1,0 +1,14 @@
+# 临时: 只开 seg + cnt 跑 smoke (det/cls 数据还在阿里云盘下载中)
+_base_: ../method/vanilla.yaml
+exp_name: smoke_seg_cnt
+
+tasks:
+  seg: { enabled: true }
+  det: { enabled: false }
+  cnt: { enabled: true }
+  cls: { enabled: false }
+
+data:
+  scheduler: rr     # 2 任务用 rr 最简单
+  batch_per_task: 4
+  num_workers: 4

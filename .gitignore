@@ -46,3 +46,7 @@ Thumbs.db
 # 临时文件
 *.tmp
 tmp/
+
+# 本地上传/凭据
+upload/
+scripts/autodl_ssh.py
