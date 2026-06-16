@@ -63,10 +63,12 @@
 | 2 | `single_det_5ep` | vanilla.yaml | det only | 5 | ~50 min |
 | 3 | `single_cnt_5ep` | vanilla.yaml | cnt only | 5 | ~25 min |
 | 4 | `single_cls_5ep` | vanilla.yaml | cls only | 5 | ~2.5 h |
-| 5 | `vanilla_10ep_ps` | vanilla.yaml | 4 任务 PS 调度 | 10 | ~5 h |
-| 6 | `mtlora_20ep_ps` | mtlora.yaml | 4 任务 PS 调度 | 20 | ~10 h |
+| 5 | `vanilla_10ep_ps` | vanilla.yaml | 4 任务 PS 调度 | 10 | ~5.5 h |
+| 6 | `mtlora_20ep_ps` | mtlora.yaml | 4 任务 PS 调度 | 20 | ~11 h |
 
-合计约 18 小时，结果落 `checkpoints/<tag>/last.pt` 与 `logs/results.csv` (8 行)。
+合计约 20 小时，结果落 `checkpoints/<tag>/last.pt` 与 `logs/results.csv` (8 行)。
+
+> **W14 sampler 修复**：依据老师反馈，PS 模式由"每步独立 P(t)∝|D_t|^α 抽样"改为"构造 α-balanced 任务序列 + shuffle"，epoch 长度从 `max(sizes)` 改为 `Σ|D_t|`。当前 α=0.5 下 4 任务 epoch_len=33478，每 epoch 各 task 步数 = seg 2512 / det 5375 / cnt 3476 / cls 22115（小任务被多次复用、cls 被随机欠采，避免 cls 一家独大）。详见 [`datasets/cross_dataset.py`](datasets/cross_dataset.py)。
 
 ### Smoke 验证（2026-06-16, RTX 4090）
 
