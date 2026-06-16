@@ -72,7 +72,8 @@ def main():
     if args.single_task:
         for t in ('seg', 'det', 'cnt', 'cls'):
             cfg.tasks[t].enabled = (t == args.single_task)
-        cfg.exp_name = f'single_{args.single_task}_{cfg.exp_name}'
+        if not args.tag:
+            cfg.exp_name = f'single_{args.single_task}_{cfg.exp_name}'
 
     device = torch.device(args.device)
     print(f'[cfg] exp={cfg.exp_name} method={cfg.method} backbone={cfg.model.backbone} '
