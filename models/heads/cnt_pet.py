@@ -87,9 +87,14 @@ class CntHead(BaseTaskHead):
                 stride=self.DENSITY_STRIDE, sigma=self.DENSITY_SIGMA,
                 device=density.device, dtype=density.dtype,
             )                                       # [B, 1, H, W]
-            mse = F.mse_loss(density, d_gt) * 1000.0
+            # Loss 平衡:
+            # - density GT 是稀疏高斯峰 (~4% 像素非零), 全零预测能让普通 MSE 几乎为 0,
+            #   旧实现 MSE×1000 + 0.01×L1(count) 让模型收敛到"输出全零"的退化解 (验证发现 3 个
+            #   独立训练的 cnt 模型 val MAE 完全相同 = 训练集 mean count).
+            # - 新平衡: 不放大 MSE; 加大 count L1 直接监督全图积分 (counting 任务的最终目标).
+            mse = F.mse_loss(density, d_gt)
             cnt_l1 = F.l1_loss(count_pred, targets['count'].to(density.dtype))
-            loss = mse + 0.01 * cnt_l1
+            loss = mse + 1.0 * cnt_l1
             out['loss'] = loss
             out['loss_items'] = {
                 'cnt/mse': mse.detach().item(),

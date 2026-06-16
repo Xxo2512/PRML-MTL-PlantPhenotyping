@@ -64,23 +64,32 @@ def main():
         print(f'  {k:24s}  {v:.4f}')
     print('-' * 60)
 
-    # 追加到 csv
+    # 追加到 csv (使用固定 schema, 缺失 metric 写空, 避免列错位)
     os.makedirs(os.path.dirname(args.csv), exist_ok=True)
     tag = args.tag or cfg.exp_name
+    META_COLS = ['time', 'tag', 'method', 'backbone', 'scheduler', 'weighting', 'ckpt']
+    METRIC_COLS = [
+        'seg/mIoU', 'seg/mAcc',
+        'det/AP50', 'det/AP',
+        'cnt/MAE', 'cnt/RMSE', 'cnt/R2',
+        'cls/acc', 'cls/mAP', 'cls/BA',
+        'aggregate',
+    ]
+    fieldnames = META_COLS + METRIC_COLS
     row = {
         'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'tag':  tag,
+        'tag': tag,
         'method': cfg.method,
         'backbone': cfg.model.backbone,
         'scheduler': cfg.data.scheduler,
         'weighting': cfg.loss.weighting,
         'ckpt': args.ckpt or '-',
-        **flat,
     }
+    for k in METRIC_COLS:
+        row[k] = flat.get(k, '')
     new_file = not os.path.isfile(args.csv)
     with open(args.csv, 'a', newline='', encoding='utf-8') as f:
-        # 列名: 取 union, 用本行的 keys
-        w = csv.DictWriter(f, fieldnames=list(row.keys()))
+        w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
         if new_file:
             w.writeheader()
         w.writerow(row)
