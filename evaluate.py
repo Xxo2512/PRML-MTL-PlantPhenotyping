@@ -25,6 +25,8 @@ def parse_args():
     p.add_argument('--tag', default=None, help='结果行的 exp 标签 (默认用 cfg.exp_name)')
     p.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     p.add_argument('--csv', default='logs/results.csv', help='结果追加到此 csv')
+    p.add_argument('--single_task', default=None, choices=[None, 'seg', 'det', 'cnt', 'cls'],
+                   help='只评测该任务 (其它 task disable, 模型也只构建对应 head)')
     return p.parse_args()
 
 
@@ -33,13 +35,18 @@ def main():
     cfg = load_config(args.config)
     device = torch.device(args.device)
 
-    print(f'[cfg] method={cfg.method} backbone={cfg.model.backbone} exp={cfg.exp_name}')
+    if args.single_task:
+        for t in ('seg', 'det', 'cnt', 'cls'):
+            cfg.tasks[t].enabled = (t == args.single_task)
+
+    print(f'[cfg] method={cfg.method} backbone={cfg.model.backbone} exp={cfg.exp_name}'
+          + (f' single_task={args.single_task}' if args.single_task else ''))
     model = build_mtl_model(cfg).to(device)
     n_train = sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
     print(f'[model] trainable params: {n_train:.2f} M')
 
     if args.ckpt:
-        sd = torch.load(args.ckpt, map_location=device)
+        sd = torch.load(args.ckpt, map_location=device, weights_only=False)
         sd = sd.get('model_state', sd)
         missing, unexpected = model.load_state_dict(sd, strict=False)
         print(f'[ckpt] loaded {args.ckpt}; missing={len(missing)} unexpected={len(unexpected)}')

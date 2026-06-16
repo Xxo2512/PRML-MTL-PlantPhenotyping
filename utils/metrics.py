@@ -217,7 +217,7 @@ def compute_det_metric(
     preds: Dict[str, torch.Tensor],
     boxes_gt: List[torch.Tensor],
     labels_gt: List[torch.Tensor],
-    iou_threshold: float = 0.5,
+    iou_thresholds: Optional[List[float]] = None,
 ) -> Dict[str, float]:
     """计算检测 AP / AP50 (简化版, 匹配用贪心 IoU).
 
@@ -227,78 +227,80 @@ def compute_det_metric(
         preds:    {'boxes': [B, N, 4], 'scores': [B, N], 'labels': [B, N]}.
         boxes_gt: List[[M_i, 4]] — 每张图的真实框.
         labels_gt: List[[M_i]] — 每张图的真实标签.
-        iou_threshold: IoU 匹配阈值.
+        iou_thresholds: IoU 阈值序列, 默认 COCO 风格 [.5:.05:.95]; 第 0 项作为 AP50.
 
     Returns:
-        {'det/AP50': float}
+        {'det/AP50': float, 'det/AP': float}
     """
+    if iou_thresholds is None:
+        iou_thresholds = [0.5 + 0.05 * i for i in range(10)]
+
     boxes_pred = preds.get("boxes")
     scores_pred = preds.get("scores")
-    labels_pred = preds.get("labels")
 
     if boxes_pred is None:
         return {"det/AP50": 0.0, "det/AP": 0.0}
 
-    # 简化: 按 score 排序, 贪心匹配, 计算 precision/recall
-    all_scores = []
-    all_matches = []
     n_gt_total = sum(len(b) for b in boxes_gt)
+    per_thr_ap: List[float] = []
 
-    for i in range(len(boxes_gt)):
-        if i >= len(boxes_pred):
-            break
-        pb = boxes_pred[i]
-        ps = scores_pred[i] if scores_pred is not None else torch.ones(len(pb))
-        gb = boxes_gt[i]
+    for thr in iou_thresholds:
+        all_scores: List[float] = []
+        all_matches: List[bool] = []
+        for i in range(len(boxes_gt)):
+            if i >= len(boxes_pred):
+                break
+            pb = boxes_pred[i]
+            ps = scores_pred[i] if scores_pred is not None else torch.ones(len(pb))
+            gb = boxes_gt[i]
 
-        if len(gb) == 0:
-            all_scores.extend(ps.tolist())
-            all_matches.extend([False] * len(ps))
+            if len(gb) == 0:
+                all_scores.extend(ps.tolist())
+                all_matches.extend([False] * len(ps))
+                continue
+
+            matched_gt = set()
+            sorted_idx = torch.argsort(ps, descending=True)
+            for idx in sorted_idx:
+                best_iou = 0.0
+                best_j = -1
+                for j in range(len(gb)):
+                    if j in matched_gt:
+                        continue
+                    iou = _compute_iou(pb[idx], gb[j])
+                    if iou > best_iou:
+                        best_iou = iou
+                        best_j = j
+                if best_iou >= thr and best_j not in matched_gt:
+                    matched_gt.add(best_j)
+                    all_matches.append(True)
+                else:
+                    all_matches.append(False)
+                all_scores.append(ps[idx].item())
+
+        if not all_scores:
+            per_thr_ap.append(0.0)
             continue
 
-        # 贪心匹配 (按 score 降序)
-        matched_gt = set()
-        sorted_idx = torch.argsort(ps, descending=True)
+        sorted_idx = sorted(range(len(all_scores)), key=lambda k: all_scores[k], reverse=True)
+        tp_cum = 0
+        fp_cum = 0
+        precisions: List[float] = []
+        recalls: List[float] = []
         for idx in sorted_idx:
-            best_iou = 0.0
-            best_j = -1
-            for j in range(len(gb)):
-                if j in matched_gt:
-                    continue
-                iou = _compute_iou(pb[idx], gb[j])
-                if iou > best_iou:
-                    best_iou = iou
-                    best_j = j
-            if best_iou >= iou_threshold and best_j not in matched_gt:
-                matched_gt.add(best_j)
-                all_matches.append(True)
+            if all_matches[idx]:
+                tp_cum += 1
             else:
-                all_matches.append(False)
-            all_scores.append(ps[idx].item())
+                fp_cum += 1
+            precisions.append(tp_cum / (tp_cum + fp_cum))
+            recalls.append(tp_cum / max(n_gt_total, 1))
+        per_thr_ap.append(_ap_from_pr(torch.tensor(precisions), torch.tensor(recalls)))
 
-    if not all_scores:
-        return {"det/AP50": 0.0, "det/AP": 0.0}
-
-    # 按 score 降序计算 AP
-    sorted_idx = sorted(range(len(all_scores)), key=lambda k: all_scores[k], reverse=True)
-    tp_cum = 0
-    fp_cum = 0
-    precisions = []
-    recalls = []
-    for idx in sorted_idx:
-        if all_matches[idx]:
-            tp_cum += 1
-        else:
-            fp_cum += 1
-        precisions.append(tp_cum / (tp_cum + fp_cum))
-        recalls.append(tp_cum / max(n_gt_total, 1))
-
-    # All-point interpolation
-    ap50 = _ap_from_pr(torch.tensor(precisions), torch.tensor(recalls))
-
+    ap50 = per_thr_ap[0] if per_thr_ap else 0.0
+    ap = sum(per_thr_ap) / max(len(per_thr_ap), 1)
     return {
         "det/AP50": round(ap50, 6),
-        "det/AP": round(ap50, 6),  # 简化版 AP == AP50
+        "det/AP": round(ap, 6),
     }
 
 
@@ -375,102 +377,139 @@ def evaluate_model(
     loaders: Dict[str, torch.utils.data.DataLoader],
     device: torch.device = torch.device("cpu"),
 ) -> Dict[str, float]:
-    """全模型评测: 在所有 dataloader 上汇总 4 个任务的指标.
+    """全模型评测: 在 loaders 上跨 batch 累积 pred/gt, 再在全集上一次性算指标.
+
+    旧版本是 "每 batch 算指标后跨 batch 平均", 这对 cls/mAP, cnt/R², det/AP
+    都是错的 (per-class AP / 总平方和都要全集统计). 改成 accumulate-then-compute.
 
     Args:
         model:   MTLModel 子类.
-        loaders: {'seg': DataLoader, 'det': ..., 'cnt': ..., 'cls': ...}.
+        loaders: {'seg': DataLoader, 'det': ..., 'cnt': ..., 'cls': ...},
+                 调用者可只传子集 (single-task 评测).
         device:  计算设备.
 
     Returns:
-        Flat dict 汇总所有指标, 如:
-        {'cls/acc': 0.85, 'cls/mAP': 0.82, 'cls/BA': 0.80,
-         'seg/mIoU': 0.62, 'det/AP50': 0.71, 'cnt/MAE': 2.3, ...,
-         'aggregate': 0.xxx}
+        Flat dict, 如 {'cls/acc': 0.85, 'seg/mIoU': 0.62, ..., 'aggregate': ...}.
+        若某 task 不在 loaders 里, 对应键不会出现.
     """
     model.eval()
     model.to(device)
 
-    all_metrics: Dict[str, List[float]] = {}
+    cls_logits: List[torch.Tensor] = []
+    cls_labels: List[torch.Tensor] = []
+    seg_inter = None   # [C] tensor
+    seg_union = None   # [C] tensor
+    seg_gt_count = None  # [C] tensor (per-class pixel count for mAcc)
+    seg_correct_count = None  # [C] tensor (per-class correct pixel count)
+    seg_num_classes = None
+    det_preds_acc: List[Dict[str, torch.Tensor]] = []
+    det_boxes_gt_acc: List[torch.Tensor] = []
+    det_labels_gt_acc: List[torch.Tensor] = []
+    cnt_pred: List[torch.Tensor] = []
+    cnt_gt: List[torch.Tensor] = []
 
     with torch.no_grad():
         for task, loader in loaders.items():
             for batch in loader:
-                # 移入设备
                 batch = _to_device(batch, device)
-
-                # Forward
                 out = model({task: batch})
                 task_out = out.get(task, {})
-
                 if "pred" not in task_out:
                     continue
-
-                # 提取指标 (仅处理当前 task)
                 targets = batch.get("targets", {})
-                metrics = _compute_single_task_metrics(task, task_out, targets)
 
-                for k, v in metrics.items():
-                    all_metrics.setdefault(k, []).append(v)
+                if task == "cls":
+                    cls_logits.append(task_out["pred"].detach().cpu())
+                    cls_labels.append(targets["label"].detach().cpu())
 
-    # 平均 (跨 batch)
-    averaged = {k: sum(v) / len(v) for k, v in all_metrics.items()}
+                elif task == "seg":
+                    pred = task_out["pred"].argmax(dim=1).cpu()      # [B,H,W]
+                    mask = targets["mask"].long().cpu()
+                    C = task_out["pred"].shape[1]
+                    if seg_num_classes is None:
+                        seg_num_classes = C
+                        seg_inter = torch.zeros(C, dtype=torch.long)
+                        seg_union = torch.zeros(C, dtype=torch.long)
+                        seg_gt_count = torch.zeros(C, dtype=torch.long)
+                        seg_correct_count = torch.zeros(C, dtype=torch.long)
+                    for c in range(C):
+                        pred_c = (pred == c)
+                        gt_c = (mask == c)
+                        seg_inter[c] += (pred_c & gt_c).sum()
+                        seg_union[c] += (pred_c | gt_c).sum()
+                        seg_gt_count[c] += gt_c.sum()
+                        seg_correct_count[c] += (pred_c & gt_c).sum()
 
-    # 计算 total aggregate (seg/mIoU + det/AP50 + -cnt/MAE + cls/mAP) / 4
-    aggregate_parts = []
-    if "seg/mIoU" in averaged:
-        aggregate_parts.append(averaged["seg/mIoU"])
-    if "det/AP50" in averaged:
-        aggregate_parts.append(averaged["det/AP50"])
-    if "cnt/MAE" in averaged:
-        aggregate_parts.append(-averaged["cnt/MAE"] / 10.0)  # 归一化
-    if "cls/mAP" in averaged:
-        aggregate_parts.append(averaged["cls/mAP"])
-    if aggregate_parts:
-        averaged["aggregate"] = round(sum(aggregate_parts) / len(aggregate_parts), 6)
+                elif task == "det":
+                    pred_dict = task_out["pred"]
+                    if isinstance(pred_dict, dict) and "boxes" in pred_dict:
+                        B = len(pred_dict["boxes"])
+                        for b in range(B):
+                            det_preds_acc.append({
+                                "boxes": pred_dict["boxes"][b].detach().cpu(),
+                                "scores": pred_dict["scores"][b].detach().cpu()
+                                          if "scores" in pred_dict else torch.ones(len(pred_dict["boxes"][b])),
+                                "labels": pred_dict["labels"][b].detach().cpu()
+                                          if "labels" in pred_dict else torch.zeros(len(pred_dict["boxes"][b]), dtype=torch.long),
+                            })
+                        bgt = targets.get("boxes", [])
+                        lgt = targets.get("labels", [])
+                        if isinstance(bgt, list):
+                            for b in range(B):
+                                det_boxes_gt_acc.append(bgt[b].detach().cpu() if torch.is_tensor(bgt[b]) else torch.as_tensor(bgt[b]))
+                                det_labels_gt_acc.append(lgt[b].detach().cpu() if torch.is_tensor(lgt[b]) else torch.as_tensor(lgt[b]))
+                        else:
+                            for b in range(B):
+                                det_boxes_gt_acc.append(bgt[b].detach().cpu())
+                                det_labels_gt_acc.append(lgt[b].detach().cpu())
+
+                elif task == "cnt":
+                    pred = task_out["pred"]
+                    count_pred = pred.get("count") if isinstance(pred, dict) else pred
+                    count_gt = targets.get("count")
+                    if count_pred is not None and count_gt is not None:
+                        cnt_pred.append(count_pred.detach().cpu())
+                        cnt_gt.append(count_gt.detach().cpu())
+
+    metrics: Dict[str, float] = {}
+
+    if cls_logits:
+        logits = torch.cat(cls_logits, dim=0)
+        labels = torch.cat(cls_labels, dim=0)
+        num_classes = logits.shape[-1] if logits.shape[-1] > 1 else int(labels.max().item()) + 1
+        metrics.update(compute_cls_metric(logits, labels, num_classes=num_classes))
+
+    if seg_inter is not None:
+        ious = (seg_inter.float() / seg_union.float().clamp(min=1)).tolist()
+        accs = (seg_correct_count.float() / seg_gt_count.float().clamp(min=1)).tolist()
+        metrics["seg/mIoU"] = round(sum(ious) / max(len(ious), 1), 6)
+        metrics["seg/mAcc"] = round(sum(accs) / max(len(accs), 1), 6)
+
+    if det_preds_acc:
+        # Re-pack into batched dict structure expected by compute_det_metric
+        det_pred_packed = {
+            "boxes":  [p["boxes"] for p in det_preds_acc],
+            "scores": [p["scores"] for p in det_preds_acc],
+            "labels": [p["labels"] for p in det_preds_acc],
+        }
+        metrics.update(compute_det_metric(det_pred_packed, det_boxes_gt_acc, det_labels_gt_acc))
+
+    if cnt_pred:
+        pred = torch.cat(cnt_pred, dim=0)
+        gt = torch.cat(cnt_gt, dim=0)
+        metrics.update(compute_cnt_metric(pred, gt))
+
+    # Aggregate (供主表排名用): seg/mIoU + det/AP50 + (-cnt/MAE/10) + cls/mAP, 均存在才参与
+    parts: List[float] = []
+    if "seg/mIoU" in metrics: parts.append(metrics["seg/mIoU"])
+    if "det/AP50" in metrics: parts.append(metrics["det/AP50"])
+    if "cnt/MAE" in metrics: parts.append(-metrics["cnt/MAE"] / 10.0)
+    if "cls/mAP" in metrics: parts.append(metrics["cls/mAP"])
+    if parts:
+        metrics["aggregate"] = round(sum(parts) / len(parts), 6)
 
     model.train()
-    return averaged
-
-
-def _compute_single_task_metrics(
-    task: str, task_out: Dict, targets: Dict
-) -> Dict[str, float]:
-    """单任务单 batch 指标计算."""
-    if task == "cls":
-        logits = task_out["pred"]
-        labels = targets.get("label")
-        if labels is not None:
-            if hasattr(task_out.get("head"), "predict_class"):
-                preds = task_out["head"].predict_class(logits)
-            else:
-                preds = logits.argmax(dim=-1) if logits.shape[-1] > 1 else (torch.sigmoid(logits) > 0.5).sum(dim=-1)
-            return compute_cls_metric(logits, labels, preds)
-
-    elif task == "seg":
-        logits = task_out["pred"]
-        mask = targets.get("mask")
-        if mask is not None:
-            return compute_seg_metric(logits, mask)
-
-    elif task == "det":
-        preds = task_out["pred"]
-        boxes_gt = targets.get("boxes", [])
-        labels_gt = targets.get("labels", [])
-        if boxes_gt is not None:
-            return compute_det_metric(preds, boxes_gt, labels_gt)
-
-    elif task == "cnt":
-        pred = task_out["pred"]
-        if isinstance(pred, dict):
-            count_pred = pred.get("count")
-        else:
-            count_pred = pred
-        count_gt = targets.get("count")
-        if count_pred is not None and count_gt is not None:
-            return compute_cnt_metric(count_pred, count_gt)
-
-    return {}
+    return metrics
 
 
 def _to_device(obj, device: torch.device):
