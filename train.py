@@ -91,6 +91,8 @@ def main():
     print('[data] sizes (batches): ' + ', '.join(f'{t}={len(l)}' for t, l in train_loaders.items()))
     alpha = cfg.data.get('proportional_alpha', 0.5) if hasattr(cfg.data, 'get') else 0.5
     sampler = CrossDatasetSampler(train_loaders, mode=cfg.data.scheduler, alpha=alpha)
+    print(f'[sched] mode={cfg.data.scheduler} alpha={alpha} epoch_len={len(sampler)} '
+          f'task_steps_per_epoch=' + ', '.join(f'{t}={c}' for t, c in sampler.task_counts().items()))
 
     # ---- loss aggregator
     loss_mode = cfg.loss.weighting if cfg.loss.weighting in ('uniform', 'uncertainty') else 'uniform'
