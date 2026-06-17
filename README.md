@@ -53,27 +53,63 @@
 - M2 (TADFormer) / M3 (DiTASK) / M5 (PGT) 已合入主干，但**尚未进入主表对比训练**（A 的 `run_a_experiments.sh` 当前只覆盖 vanilla + MTLoRA）；W15 末由各方法主笔追加自己的 `run_<x>_experiments.sh`，复用同样的 ckpt/eval 流程。
 - M4 (TaskPrompter) — `models/mtl/taskprompter.py` 尚未实现（D 主笔）。
 
-### W15 主表实验（运行中 @ AutoDL RTX 4090, 2026-06-16）
+### W15 主表实验（A 部分已完成 @ AutoDL RTX 4090, 2026-06-17）
 
-`bash scripts/run_a_experiments.sh` 当前在跑，输出到 `logs/run_a.log`：
+`bash scripts/run_a_experiments.sh` 已跑完，结果落 `logs/results.csv`。
 
-| # | exp tag | config | scope | epochs | 预估 |
+| # | exp tag | config | scope | epochs | 状态 |
 |---|---|---|---|---|---|
-| 1 | `single_seg_5ep` | vanilla.yaml | seg only | 5 | ~25 min |
-| 2 | `single_det_5ep` | vanilla.yaml | det only | 5 | ~50 min |
-| 3 | `single_cnt_5ep` | vanilla.yaml | cnt only | 5 | ~25 min |
-| 4 | `single_cls_5ep` | vanilla.yaml | cls only | 5 | ~2.5 h |
-| 5 | `vanilla_10ep_ps` | vanilla.yaml | 4 任务 PS 调度 | 10 | ~5.5 h |
-| 6 | `mtlora_20ep_ps` | mtlora.yaml | 4 任务 PS 调度 | 20 | ~11 h |
+| 1 | `single_seg_5ep` | vanilla.yaml | seg only | 5 | ✅ |
+| 2 | `single_det_5ep` | vanilla.yaml | det only | 5 | ✅ |
+| 3 | `single_cnt_5ep` | vanilla.yaml | cnt only | 5 | ✅ |
+| 4 | `single_cls_5ep` | vanilla.yaml | cls only | 5 | ✅ |
+| 5 | `vanilla_10ep_ps` | vanilla.yaml | 4 任务 PS 调度 | 10 | ✅ |
+| 6 | `mtlora_20ep_ps` | mtlora.yaml | 4 任务 PS 调度 | 20 | ✅ |
 
-合计约 20 小时，结果落 `checkpoints/<tag>/last.pt` 与 `logs/results.csv` (8 行)。
+> **W14 sampler 修复**：依据老师反馈，PS 模式由"每步独立 P(t)∝|D_t|^α 抽样"改为"构造 α-balanced 任务序列 + shuffle"，epoch 长度从 `max(sizes)` 改为 `Σ|D_t|`。当前 α=0.5 下 4 任务 epoch_len=8367 (bs=8)，每 epoch 各 task 步数 = seg 627 / det 1343 / cnt 868 / cls 5529（小任务被多次复用、cls 被随机欠采，避免 cls 一家独大）。详见 [`datasets/cross_dataset.py`](datasets/cross_dataset.py)。
 
-> **W14 sampler 修复**：依据老师反馈，PS 模式由"每步独立 P(t)∝|D_t|^α 抽样"改为"构造 α-balanced 任务序列 + shuffle"，epoch 长度从 `max(sizes)` 改为 `Σ|D_t|`。当前 α=0.5 下 4 任务 epoch_len=33478，每 epoch 各 task 步数 = seg 2512 / det 5375 / cnt 3476 / cls 22115（小任务被多次复用、cls 被随机欠采，避免 cls 一家独大）。详见 [`datasets/cross_dataset.py`](datasets/cross_dataset.py)。
+> **W15 指标/loss 修复**（2026-06-17）：原指标实现有 4 处 bug：
+> - `cls/mAP` 每 batch 算后平均，退化到 ~1/C 随机水平 → 改为跨 batch 累积后整体算
+> - `det/AP` == `det/AP50`（placeholder）→ 改为 COCO 风格 10 个 IoU 阈值平均
+> - `cnt/R²` 用 batch.mean() 作为 ss_tot → batch 太小爆负值，改为全集 mean
+> - `cnt head` 的 loss `MSE×1000 + 0.01×L1(count)` 让模型收敛到"输出全零"退化解（3 个独立训练的 cnt 模型 val MAE 完全相同）→ 改为 `MSE + 1.0×L1(count)`
+>
+> 这些 fix 之后才得到下面这张主表。详见 `utils/metrics.py` / `models/heads/cnt_pet.py`。
+
+### 主表（修指标 + 修 cnt loss 后的干净版本）
+
+| Method (tag) | seg/mIoU↑ | seg/mAcc↑ | det/AP50↑ | det/AP@[.5:.95]↑ | cnt/MAE↓ | cnt/RMSE↓ | cnt/R²↑ | cls/acc↑ | cls/mAP↑ | cls/BA↑ |
+|---|---|---|---|---|---|---|---|---|---|---|
+| single_seg_5ep | **0.634** | 0.708 | — | — | — | — | — | — | — | — |
+| single_det_5ep | — | — | 0.791 | **0.397** | — | — | — | — | — | — |
+| single_cnt_5ep | — | — | — | — | 15.68 | 23.57 | 0.681 | — | — | — |
+| single_cls_5ep | — | — | — | — | — | — | — | 0.986 | **0.9997** | 0.986 |
+| vanilla_10ep_ps | 0.668 | 0.757 | **0.804** | 0.396 | 11.21 | **15.75** | **0.858** | **0.998** | 0.9996 | **0.998** |
+| mtlora_20ep_ps | **0.671** | **0.759** | 0.769 | 0.352 | **10.91** | 15.75 | 0.857 | 0.995 | 0.9995 | 0.995 |
+
+### 迁移效应（diagonal 单任务 vs MTL）
+
+| Task | 单任务 baseline | Vanilla MTL | MTLoRA | 迁移结论 |
+|---|---|---|---|---|
+| seg / mIoU | 0.634 | 0.668 (+3.4) | **0.671 (+3.7)** | ✅ **正迁移**，多任务帮助分割 |
+| seg / mAcc | 0.708 | 0.757 (+4.9) | **0.759 (+5.1)** | ✅ **正迁移** |
+| det / AP50 | 0.791 | **0.804 (+1.3)** | 0.769 (-2.2) | ⚠️ Vanilla 持平; MTLoRA **负迁移** |
+| det / AP@.5:.95 | **0.397** | 0.396 (-0.1) | 0.352 (-4.5) | ⚠️ MTLoRA 显著负迁移 |
+| cnt / MAE | 15.68 | 11.21 (-4.5) | **10.91 (-4.8)** | ✅ **强正迁移**, -30% |
+| cnt / R² | 0.681 | **0.858** (+0.18) | 0.857 (+0.18) | ✅ **强正迁移** |
+| cls / acc | 0.986 | **0.998** | 0.995 | 接近饱和, 信息量低 |
+
+### 关键发现
+
+1. **cnt 受益最多 (+30% MAE)**：cnt 数据集小（~6k 训练图）、单任务 5 ep 严重欠学；MTL 下 backbone 借 seg/det 学到"麦穗/叶尖在哪"的定位特征，迁移到密度预测。
+2. **seg 稳定正迁移 (+3.7 mIoU)**：多任务监督让 backbone 学到更通用的视觉表示，分割像素级分类受益。
+3. **det 对 MTL 敏感**：Vanilla 几乎持平 single；MTLoRA 因冻结 backbone + 低秩约束，**无法为 dense prediction 提供细粒度空间特征**，导致 AP@[.5:.95] 跌 4.5 个点。MTLoRA 在文献里也是这个已知短板（dense pred. 需要 full fine-tune 才能充分适应）。
+4. **cls 饱和无信息**：6 类生育期视觉特征差异极大，单任务和 MTL 都能拿 99%+。**这一列不该作为方法对比的依据**；要么换更难数据集，要么报告时弱化。
+5. **MTLoRA 卖点验证**：17.3M 可训练参数 (= Vanilla 39.2M 的 **44%**) 拿到了相当的 seg/cnt/cls 表现，det 是要 trade off 的代价。
 
 ### Smoke 验证（2026-06-16, RTX 4090）
 
-`bash scripts/smoke_mtlora.bat`（本地）/ `python train.py --steps 8 --no_save`（服务器）均 PASS：
-
+`python train.py --steps 8 --no_save`（服务器）均 PASS：
 - **vanilla** (`swin_tiny`, 4 任务, bs_per_task=2)：trainable 39.16M / total 39.16M，~5 it/s
 - **MTLoRA** (`swin_tiny`, 4 任务, bs_per_task=2, rank=16)：注入 48 个 LoRALinear，trainable 17.30M / total 44.81M（backbone 冻结，仅 LoRA + heads），~6 it/s
 
