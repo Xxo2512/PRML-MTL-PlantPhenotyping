@@ -68,50 +68,69 @@
 
 > **W14 sampler 修复**：依据老师反馈，PS 模式由"每步独立 P(t)∝|D_t|^α 抽样"改为"构造 α-balanced 任务序列 + shuffle"，epoch 长度从 `max(sizes)` 改为 `Σ|D_t|`。当前 α=0.5 下 4 任务 epoch_len=8367 (bs=8)，每 epoch 各 task 步数 = seg 627 / det 1343 / cnt 868 / cls 5529（小任务被多次复用、cls 被随机欠采，避免 cls 一家独大）。详见 [`datasets/cross_dataset.py`](datasets/cross_dataset.py)。
 
-> **W15 指标/loss 修复**（2026-06-17）：原指标实现有 4 处 bug：
+> **W15 指标/loss/head 修复**（2026-06-17）：原实现有 5 处问题：
 > - `cls/mAP` 每 batch 算后平均，退化到 ~1/C 随机水平 → 改为跨 batch 累积后整体算
 > - `det/AP` == `det/AP50`（placeholder）→ 改为 COCO 风格 10 个 IoU 阈值平均
 > - `cnt/R²` 用 batch.mean() 作为 ss_tot → batch 太小爆负值，改为全集 mean
-> - `cnt head` 的 loss `MSE×1000 + 0.01×L1(count)` 让模型收敛到"输出全零"退化解（3 个独立训练的 cnt 模型 val MAE 完全相同）→ 改为 `MSE + 1.0×L1(count)`
+> - `cnt head` 第一版 (density+MSE×1000) 让模型收敛到"输出全零"退化解 → 第二版重平衡 (MSE+L1)
+> - `cnt_pet.py` 名为 PET 但实现是 density regression（老师指出）→ **第三版改写为真 PET：N=256 learnable point queries + Transformer decoder + Hungarian matching + CE/SmoothL1 loss**，遵循 Liu et al. ICCV 2023
 >
-> 这些 fix 之后才得到下面这张主表。详见 `utils/metrics.py` / `models/heads/cnt_pet.py`。
+> 详见 `utils/metrics.py` / `models/heads/cnt_pet.py`。
 
-### 主表（修指标 + 修 cnt loss 后的干净版本）
+### 主表（PET cnt head + 修指标后的最终版本）
 
 | Method (tag) | seg/mIoU↑ | seg/mAcc↑ | det/AP50↑ | det/AP@[.5:.95]↑ | cnt/MAE↓ | cnt/RMSE↓ | cnt/R²↑ | cls/acc↑ | cls/mAP↑ | cls/BA↑ |
 |---|---|---|---|---|---|---|---|---|---|---|
 | single_seg_5ep | **0.634** | 0.708 | — | — | — | — | — | — | — | — |
-| single_det_5ep | — | — | 0.791 | **0.397** | — | — | — | — | — | — |
-| single_cnt_5ep | — | — | — | — | 15.68 | 23.57 | 0.681 | — | — | — |
+| single_det_5ep | — | — | **0.791** | **0.397** | — | — | — | — | — | — |
+| single_cnt_5ep (PET) | — | — | — | — | 23.41 | 28.84 | 0.522 | — | — | — |
 | single_cls_5ep | — | — | — | — | — | — | — | 0.986 | **0.9997** | 0.986 |
-| vanilla_10ep_ps | 0.668 | 0.757 | **0.804** | 0.396 | 11.21 | **15.75** | **0.858** | **0.998** | 0.9996 | **0.998** |
-| mtlora_20ep_ps | **0.671** | **0.759** | 0.769 | 0.352 | **10.91** | 15.75 | 0.857 | 0.995 | 0.9995 | 0.995 |
+| vanilla_10ep_ps | 0.670 | 0.767 | **0.803** | **0.395** | 15.92 | 21.17 | 0.742 | 0.995 | 0.9998 | 0.995 |
+| **mtlora_20ep_ps** | **0.677** | **0.775** | 0.773 | 0.354 | **14.22** | **18.95** | **0.794** | **0.998** | **1.0000** | **0.998** |
+
+### Δm 综合指标（Maninis et al. CVPR 2019，老师建议）
+
+公式：$\Delta m = \frac{1}{T} \sum_{t=1}^{T} (-1)^{l_t} \cdot \frac{M_t^{\text{MTL}} - M_t^{\text{STL}}}{M_t^{\text{STL}}}$（$l_t=1$ 若指标越低越好，否则 0）
+
+由 `scripts/compute_delta_m.py` 自动从 `logs/results.csv` 计算：
+
+| 方法 | seg/mIoU | det/AP50 | cnt/MAE | cls/acc | **Δm** |
+|---|---|---|---|---|---|
+| **mtlora_20ep_ps** | +6.72% | -2.34% | +39.28% | +1.21% | **+11.22%** ← 最优 |
+| vanilla_10ep_ps | +5.61% | +1.43% | +32.03% | +0.86% | +9.98% |
+
+两种方法 Δm 都为正 → MTL 综合优于单任务基线；MTLoRA 综合提升幅度高出 Vanilla 约 1.24 个百分点。
 
 ### 迁移效应（diagonal 单任务 vs MTL）
 
-| Task | 单任务 baseline | Vanilla MTL | MTLoRA | 迁移结论 |
+| Task | 单任务 baseline (PET 5ep) | Vanilla MTL | MTLoRA | 迁移结论 |
 |---|---|---|---|---|
-| seg / mIoU | 0.634 | 0.668 (+3.4) | **0.671 (+3.7)** | ✅ **正迁移**，多任务帮助分割 |
-| seg / mAcc | 0.708 | 0.757 (+4.9) | **0.759 (+5.1)** | ✅ **正迁移** |
-| det / AP50 | 0.791 | **0.804 (+1.3)** | 0.769 (-2.2) | ⚠️ Vanilla 持平; MTLoRA **负迁移** |
-| det / AP@.5:.95 | **0.397** | 0.396 (-0.1) | 0.352 (-4.5) | ⚠️ MTLoRA 显著负迁移 |
-| cnt / MAE | 15.68 | 11.21 (-4.5) | **10.91 (-4.8)** | ✅ **强正迁移**, -30% |
-| cnt / R² | 0.681 | **0.858** (+0.18) | 0.857 (+0.18) | ✅ **强正迁移** |
-| cls / acc | 0.986 | **0.998** | 0.995 | 接近饱和, 信息量低 |
+| seg / mIoU | 0.634 | 0.670 (+3.6) | **0.677 (+4.3)** | ✅ **正迁移**，多任务帮助分割 |
+| seg / mAcc | 0.708 | 0.767 (+5.9) | **0.775 (+6.7)** | ✅ **正迁移** |
+| det / AP50 | 0.791 | **0.803 (+1.2)** | 0.773 (-1.8) | ⚠️ Vanilla 略好；MTLoRA 轻微负迁移 |
+| det / AP@.5:.95 | **0.397** | 0.395 (-0.2) | 0.354 (-4.3) | ⚠️ MTLoRA 在严格 IoU 下显著弱 |
+| cnt / MAE | 23.41 (PET 欠训练) | 15.92 (-7.5) | **14.22 (-9.2)** | ✅ **强正迁移**，-39% |
+| cnt / R² | 0.522 | 0.742 (+0.22) | **0.794 (+0.27)** | ✅ **强正迁移** |
+| cls / acc | 0.986 | 0.995 | **0.998** | 接近饱和, 信息量低 |
 
 ### 关键发现
 
-1. **cnt 受益最多 (+30% MAE)**：cnt 数据集小（~6k 训练图）、单任务 5 ep 严重欠学；MTL 下 backbone 借 seg/det 学到"麦穗/叶尖在哪"的定位特征，迁移到密度预测。
-2. **seg 稳定正迁移 (+3.7 mIoU)**：多任务监督让 backbone 学到更通用的视觉表示，分割像素级分类受益。
-3. **det 对 MTL 敏感**：Vanilla 几乎持平 single；MTLoRA 因冻结 backbone + 低秩约束，**无法为 dense prediction 提供细粒度空间特征**，导致 AP@[.5:.95] 跌 4.5 个点。MTLoRA 在文献里也是这个已知短板（dense pred. 需要 full fine-tune 才能充分适应）。
-4. **cls 饱和无信息**：6 类生育期视觉特征差异极大，单任务和 MTL 都能拿 99%+。**这一列不该作为方法对比的依据**；要么换更难数据集，要么报告时弱化。
-5. **MTLoRA 卖点验证**：17.3M 可训练参数 (= Vanilla 39.2M 的 **44%**) 拿到了相当的 seg/cnt/cls 表现，det 是要 trade off 的代价。
+1. **MTLoRA Δm = +11.22% 超过 Vanilla +9.98%**：MTLoRA 用 44% 可训练参数 (17.4M vs 39.3M) 反而综合表现更好。
+2. **cnt 单项贡献 ~88% 的 Δm**：mtlora cnt +39.28% / 总 Δm 11.22% × 4 = cnt 占 9.82 / 11.22 ≈ 88%。这部分提升是**三层叠加**：
+   - 跨任务迁移（seg/det 共享 backbone 学的物体定位特征帮助 cnt）
+   - 训练量等价（mtlora 20ep × 868 = 17360 cnt batches vs single 940，**18 倍**）
+   - PET 在单任务 5ep 下欠拟合（MAE 23.4，远差于密度回归基线的 15.7），让 single baseline 异常弱
+   - **需要 W17 消融**：跑 single_cnt 在 20-50 ep 看 PET 真正的"单任务上限"，从而严格区分三层贡献
+3. **seg 稳定正迁移**：+4.3 mIoU / +6.7 mAcc。多任务监督让 backbone 学到更通用视觉表示，分割像素级分类受益。
+4. **det 对 MTL 敏感**：Vanilla 持平 single；MTLoRA 因冻结 backbone + 低秩约束，无法为 dense prediction 提供细粒度空间特征，AP@[.5:.95] 跌 4.3 个点。是 MTLoRA 在 dense 任务上的已知短板。
+5. **cls 饱和无信息**：6 类生育期视觉特征差异极大，单任务和 MTL 都拿 99%+。**这一列不该作为方法对比的依据**；要么换更难数据集，要么报告时弱化。**注意**：cls 数据集 val 中有 24% 的 scene 与 train 共享（同一片地块不同处理变体），val acc 99% 部分包含数据泄露。
 
-### Smoke 验证（2026-06-16, RTX 4090）
+### Smoke 验证（2026-06-16 / 17, RTX 4090）
 
 `python train.py --steps 8 --no_save`（服务器）均 PASS：
-- **vanilla** (`swin_tiny`, 4 任务, bs_per_task=2)：trainable 39.16M / total 39.16M，~5 it/s
-- **MTLoRA** (`swin_tiny`, 4 任务, bs_per_task=2, rank=16)：注入 48 个 LoRALinear，trainable 17.30M / total 44.81M（backbone 冻结，仅 LoRA + heads），~6 it/s
+- **vanilla** (`swin_tiny`, 4 任务, bs=2)：trainable 39.16M / total 39.16M，~5 it/s
+- **MTLoRA** (`swin_tiny`, 4 任务, bs=2, rank=16)：注入 48 个 LoRALinear，trainable 17.30M / total 44.81M（backbone 冻结，仅 LoRA + heads），~6 it/s
+- **PET cnt head 升级 smoke**：trainable 28.02M，loss 从 6.88 → ~1.5 健康下降，~12 it/s
 
 
 ---
@@ -139,8 +158,9 @@
 - [ ] 加 `run_c_experiments.sh`：在主表里追加 DiTASK × 4 任务
 
 ### D（计数 & 评测 / TaskPrompter）
-- [x] 升级 `models/heads/cnt_pet.py` density 占位版 → **PET** 风格点查询头
+- [x] 升级 `models/heads/cnt_pet.py` 占位版 → **真 PET 点查询头**（learnable queries + Transformer decoder + Hungarian + CE/SmoothL1, 第三版，按老师反馈）
 - [x] 在 `utils/metrics.py` 锁死统一 metric 模块
+- [x] 写 `scripts/compute_delta_m.py` Δm 综合指标（按老师建议加）
 - [ ] `models/mtl/taskprompter.py` — 每 block 在 token 序列前拼 spatial prompt + FiLM channel prompt
 - [ ] 加 `run_d_experiments.sh`
 
