@@ -73,4 +73,8 @@ def build_mtl_model(cfg) -> MTLModel:
         from .ditask import DiTASKModel
 
         return DiTASKModel(cfg=cfg)
+    if cfg.method == "taskprompter":
+        from .taskprompter import TaskPrompterModel
+
+        return TaskPrompterModel(cfg=cfg)
     raise NotImplementedError(f"method {cfg.method!r} not yet implemented")

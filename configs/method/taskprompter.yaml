@@ -7,3 +7,4 @@ model:
   taskprompter:
     n_spatial: 4
     n_channel: 4
+    prompt_dim: 256
