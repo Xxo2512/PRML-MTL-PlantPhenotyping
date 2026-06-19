@@ -1,0 +1,11 @@
+# vanilla_frozen = 共享 Swin backbone (冻结) + 4 个 task head
+# 与 vanilla.yaml 唯一区别: freeze_backbone=true
+# 作用: 跟 MTLoRA/TADFormer/DiTASK/PGT/TaskPrompter 等 "backbone 冻结" 的参数高效
+#       方法在同一条起跑线对比, 隔离 "MTL 设计" vs "freeze_backbone" 两个变量
+
+_base_: ../method/vanilla.yaml
+exp_name: vanilla_frozen_swint_384_rr
+method: vanilla
+
+model:
+  freeze_backbone: true   # 冻结, 与参数高效方法同档对比
