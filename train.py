@@ -47,6 +47,8 @@ def parse_args():
                    help='覆盖 cfg.data.num_workers (Windows smoke 建议设 0)')
     p.add_argument('--batch_per_task', type=int, default=None,
                    help='覆盖 cfg.data.batch_per_task')
+    p.add_argument('--amp', default='none', choices=['none', 'fp16', 'bf16'],
+                   help='混合精度: bf16 在 4090/Ampere+ 上 ~1.3-1.5x 加速且无 loss scale 麻烦')
     return p.parse_args()
 
 
@@ -107,6 +109,14 @@ def main():
     out_dir = os.path.join('checkpoints', cfg.exp_name)
     os.makedirs(out_dir, exist_ok=True)
 
+    # ---- AMP 设置 (混合精度加速)
+    amp_dtype = {'none': None, 'fp16': torch.float16, 'bf16': torch.bfloat16}[args.amp]
+    use_amp = amp_dtype is not None and device.type == 'cuda'
+    # fp16 需要 GradScaler; bf16 不需要 (4090 / Ampere+ 推荐 bf16)
+    scaler = torch.cuda.amp.GradScaler() if (use_amp and amp_dtype == torch.float16) else None
+    if use_amp:
+        print(f'[amp] enabled with dtype={args.amp}')
+
     def save_ckpt(step: int, name: str):
         if args.no_save:
             return
@@ -133,16 +143,33 @@ def main():
                 if step >= steps_target:
                     break
                 batch = to_device(batch, device)
-                out = model(batch)
-                per_task_loss = {t: o['loss'] for t, o in out.items() if 'loss' in o}
-                if not per_task_loss:
-                    step += 1
-                    continue
-                loss = loss_agg(per_task_loss)
+                if use_amp:
+                    with torch.autocast(device_type='cuda', dtype=amp_dtype):
+                        out = model(batch)
+                        per_task_loss = {t: o['loss'] for t, o in out.items() if 'loss' in o}
+                        if not per_task_loss:
+                            step += 1
+                            continue
+                        loss = loss_agg(per_task_loss)
+                else:
+                    out = model(batch)
+                    per_task_loss = {t: o['loss'] for t, o in out.items() if 'loss' in o}
+                    if not per_task_loss:
+                        step += 1
+                        continue
+                    loss = loss_agg(per_task_loss)
+
                 optim.zero_grad(set_to_none=True)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(params, cfg.train.grad_clip)
-                optim.step()
+                if scaler is not None:
+                    scaler.scale(loss).backward()
+                    scaler.unscale_(optim)
+                    torch.nn.utils.clip_grad_norm_(params, cfg.train.grad_clip)
+                    scaler.step(optim)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(params, cfg.train.grad_clip)
+                    optim.step()
 
                 if step % args.log_every == 0:
                     items_str = ' '.join(f'{k}={v.item():.3f}' for k, v in per_task_loss.items())
