@@ -77,7 +77,7 @@
 >
 > 详见 `utils/metrics.py` / `models/heads/cnt_pet.py`。
 
-### 主表（PET cnt head + 修指标后的最终版本）
+### 主表（PET cnt head + 修指标后的最终版本, 含 7 个 MTL 方法）
 
 | Method (tag) | seg/mIoU↑ | seg/mAcc↑ | det/AP50↑ | det/AP@[.5:.95]↑ | cnt/MAE↓ | cnt/RMSE↓ | cnt/R²↑ | cls/acc↑ | cls/mAP↑ | cls/BA↑ |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -85,45 +85,74 @@
 | single_det_5ep | — | — | **0.791** | **0.397** | — | — | — | — | — | — |
 | single_cnt_5ep (PET) | — | — | — | — | 23.41 | 28.84 | 0.522 | — | — | — |
 | single_cls_5ep | — | — | — | — | — | — | — | 0.986 | **0.9997** | 0.986 |
-| vanilla_10ep_ps | 0.670 | 0.767 | **0.803** | **0.395** | 15.92 | 21.17 | 0.742 | 0.995 | 0.9998 | 0.995 |
+| vanilla_10ep_ps (unfreeze) | 0.670 | 0.767 | **0.803** | **0.395** | 15.92 | 21.17 | 0.742 | 0.995 | 0.9998 | 0.995 |
+| vanilla_frozen_20ep_ps | 0.660 | 0.754 | 0.659 | 0.272 | 18.64 | 26.30 | 0.602 | 0.969 | 0.994 | 0.969 |
 | **mtlora_20ep_ps** | **0.677** | **0.775** | 0.773 | 0.354 | **14.22** | **18.95** | **0.794** | **0.998** | **1.0000** | **0.998** |
+| tadformer_20ep_ps | 0.672 | 0.770 | 0.643 | 0.256 | 18.49 | 23.91 | 0.671 | 0.976 | 0.995 | 0.975 |
+| ditask_20ep_ps | 0.670 | 0.768 | 0.642 | 0.256 | 17.69 | 23.32 | 0.687 | 0.984 | 0.998 | 0.984 |
+| pgt_20ep_ps | 0.659 | 0.765 | 0.583 | 0.211 | 15.05 | 21.01 | 0.746 | 0.994 | 0.999 | 0.994 |
+| taskprompter_20ep_ps | 0.657 | 0.760 | 0.580 | 0.209 | 14.98 | 19.69 | **0.777** | 0.988 | 0.999 | 0.988 |
 
 ### Δm 综合指标（Maninis et al. CVPR 2019，老师建议）
 
 公式：$\Delta m = \frac{1}{T} \sum_{t=1}^{T} (-1)^{l_t} \cdot \frac{M_t^{\text{MTL}} - M_t^{\text{STL}}}{M_t^{\text{STL}}}$（$l_t=1$ 若指标越低越好，否则 0）
 
-由 `scripts/compute_delta_m.py` 自动从 `logs/results.csv` 计算：
+由 `scripts/compute_delta_m.py` 自动从 `logs/results.csv` 计算（按 Δm 降序）：
 
-| 方法 | seg/mIoU | det/AP50 | cnt/MAE | cls/acc | **Δm** |
-|---|---|---|---|---|---|
-| **mtlora_20ep_ps** | +6.72% | -2.34% | +39.28% | +1.21% | **+11.22%** ← 最优 |
-| vanilla_10ep_ps | +5.61% | +1.43% | +32.03% | +0.86% | +9.98% |
+| 排名 | 方法 | freeze | seg/mIoU | det/AP50 | cnt/MAE | cls/acc | **Δm** |
+|---|---|---|---|---|---|---|---|
+| 🥇 1 | **mtlora_20ep_ps** | ✅ | +6.72% | -2.34% | +39.28% | +1.21% | **+11.22%** |
+| 🥈 2 | vanilla_10ep_ps | ❌ | +5.61% | +1.43% | +32.03% | +0.86% | +9.98% |
+| 🥉 3 | pgt_20ep_ps | ✅ | +3.92% | -26.25% | +35.73% | +0.77% | +3.54% |
+| 4 | taskprompter_20ep_ps | ✅ | +3.54% | -26.63% | +36.03% | +0.19% | +3.28% |
+| 5 | ditask_20ep_ps | ✅ | +5.56% | -18.86% | +24.44% | -0.24% | +2.72% |
+| 6 | tadformer_20ep_ps | ✅ | +5.90% | -18.73% | +21.02% | -1.09% | +1.77% |
+| 7 | **vanilla_frozen_20ep_ps** | ✅ | +4.01% | -16.71% | +20.41% | -1.71% | **+1.50%** |
 
-两种方法 Δm 都为正 → MTL 综合优于单任务基线；MTLoRA 综合提升幅度高出 Vanilla 约 1.24 个百分点。
+### 关键发现 (含 vanilla_frozen 对照后)
 
-### 迁移效应（diagonal 单任务 vs MTL）
+**1. Backbone 冻结本身就吃 -8.48 Δm 点（"frozen tax"）**
 
-| Task | 单任务 baseline (PET 5ep) | Vanilla MTL | MTLoRA | 迁移结论 |
-|---|---|---|---|---|
-| seg / mIoU | 0.634 | 0.670 (+3.6) | **0.677 (+4.3)** | ✅ **正迁移**，多任务帮助分割 |
-| seg / mAcc | 0.708 | 0.767 (+5.9) | **0.775 (+6.7)** | ✅ **正迁移** |
-| det / AP50 | 0.791 | **0.803 (+1.2)** | 0.773 (-1.8) | ⚠️ Vanilla 略好；MTLoRA 轻微负迁移 |
-| det / AP@.5:.95 | **0.397** | 0.395 (-0.2) | 0.354 (-4.3) | ⚠️ MTLoRA 在严格 IoU 下显著弱 |
-| cnt / MAE | 23.41 (PET 欠训练) | 15.92 (-7.5) | **14.22 (-9.2)** | ✅ **强正迁移**，-39% |
-| cnt / R² | 0.522 | 0.742 (+0.22) | **0.794 (+0.27)** | ✅ **强正迁移** |
-| cls / acc | 0.986 | 0.995 | **0.998** | 接近饱和, 信息量低 |
+```
+vanilla         (backbone unfreeze): Δm = +9.98%
+vanilla_frozen  (backbone frozen):   Δm = +1.50%  →  -8.48 pp
+```
 
-### 关键发现
+Vanilla 第二名的位置主要来自 backbone fine-tune 红利，**不是 MTL 设计的贡献**（vanilla 没有 MTL trick）。
 
-1. **MTLoRA Δm = +11.22% 超过 Vanilla +9.98%**：MTLoRA 用 44% 可训练参数 (17.4M vs 39.3M) 反而综合表现更好。
-2. **cnt 单项贡献 ~88% 的 Δm**：mtlora cnt +39.28% / 总 Δm 11.22% × 4 = cnt 占 9.82 / 11.22 ≈ 88%。这部分提升是**三层叠加**：
-   - 跨任务迁移（seg/det 共享 backbone 学的物体定位特征帮助 cnt）
-   - 训练量等价（mtlora 20ep × 868 = 17360 cnt batches vs single 940，**18 倍**）
-   - PET 在单任务 5ep 下欠拟合（MAE 23.4，远差于密度回归基线的 15.7），让 single baseline 异常弱
-   - **需要 W17 消融**：跑 single_cnt 在 20-50 ep 看 PET 真正的"单任务上限"，从而严格区分三层贡献
-3. **seg 稳定正迁移**：+4.3 mIoU / +6.7 mAcc。多任务监督让 backbone 学到更通用视觉表示，分割像素级分类受益。
-4. **det 对 MTL 敏感**：Vanilla 持平 single；MTLoRA 因冻结 backbone + 低秩约束，无法为 dense prediction 提供细粒度空间特征，AP@[.5:.95] 跌 4.3 个点。是 MTLoRA 在 dense 任务上的已知短板。
-5. **cls 饱和无信息**：6 类生育期视觉特征差异极大，单任务和 MTL 都拿 99%+。**这一列不该作为方法对比的依据**；要么换更难数据集，要么报告时弱化。
+**2. MTLoRA 是唯一真正"赢过冻结基线"的方法**
+
+把所有 backbone-frozen 方法跟 `vanilla_frozen` (+1.50%) 比，MTLoRA 提升 ~10 pp，其他方法只 0.3-2 pp（接近噪声）：
+
+| 方法 | Δm | vs vanilla_frozen |
+|---|---|---|
+| **MTLoRA** | +11.22% | **+9.72** ⭐ |
+| PGT | +3.54% | +2.04 |
+| TaskPrompter | +3.28% | +1.78 |
+| DiTASK | +2.72% | +1.22 |
+| TADFormer | +1.77% | +0.27 |
+
+**3. det 是分水岭，确认 "适配粒度 = 抗压能力"**
+
+| 方法 | 适配位置 | 适配点数 | det/AP50 vs single |
+|---|---|---|---|
+| Vanilla unfreeze | 全 backbone | 27.5M params | +1.43% |
+| **MTLoRA** | **per-Linear (qkv/proj/fc1/fc2)** | **48 个** | **-2.34%** |
+| TADFormer | per-stage γ,β | 4 个 | -18.73% |
+| DiTASK | per-stage SVD 旋转 | 4 个 | -18.86% |
+| vanilla_frozen | (无适配) | 0 | -16.71% |
+| PGT | per-block prompt | 12 个 | -26.25% |
+| TaskPrompter | per-stage spatial+channel | 4×2 个 | -26.63% |
+
+**只要 backbone 冻结，det 就跌 ~17-27%**。MTLoRA 把这个 drop 限制在 -2.34% 是它的核心卖点。
+
+**4. cnt 全员强正迁移（含 caveat）**
+
+7 个 MTL 方法 cnt 都 +20~39%。原因有三层：①跨任务迁移（seg/det 共享 backbone 学的物体定位特征帮助 cnt）②训练量等价（mtlora 20ep × 868 = 17360 cnt batches vs single 940，**18 倍**）③PET 在单任务 5ep 下严重欠拟合（MAE 23.4），让 single baseline 异常弱。需要 W17 消融分解这三层。
+
+**5. 跨数据集 MTL ≠ 论文里的同图 MTL**
+
+TaskPrompter / DiTASK / TADFormer 论文里在 NYUD / PASCAL 上都明显赢过 vanilla，但**它们的实验设置是同一张图做 N 个任务**（共享输入 + 共享 backbone 表示）。我们这里 4 个任务用 **4 个不同数据集**，每个数据集分布不同——backbone-frozen 方法的核心假设 "backbone 预训练特征已经够用" 在跨域时被打破，所以这些方法表现不及论文。这是我们项目命题的核心 finding。
 
 ### Smoke 验证（2026-06-16 / 17, RTX 4090）
 
@@ -131,6 +160,7 @@
 - **vanilla** (`swin_tiny`, 4 任务, bs=2)：trainable 39.16M / total 39.16M，~5 it/s
 - **MTLoRA** (`swin_tiny`, 4 任务, bs=2, rank=16)：注入 48 个 LoRALinear，trainable 17.30M / total 44.81M（backbone 冻结，仅 LoRA + heads），~6 it/s
 - **PET cnt head 升级 smoke**：trainable 28.02M，loss 从 6.88 → ~1.5 健康下降，~12 it/s
+- **vanilla_frozen smoke (2026-06-19, bs=24 nw=16 bf16)**：trainable 11.78M / total 39.30M，bf16 AMP 后稳态 ~9 it/s × 24 = 218 samples/s
 
 
 ---
