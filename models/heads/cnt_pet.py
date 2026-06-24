@@ -106,16 +106,19 @@ class CntHead(BaseTaskHead):
         cls_logit = self.cls_head(out)                   # [B, N, 2]
         coords = self.coord_head(out).sigmoid()          # [B, N, 2]  in [0,1]
 
-        # 推理 count: 软计数 (训练用) + 硬计数 (推理用)
+        # 推理 count: 软计数 (训练用) + 硬计数 (诊断保留)
+        # 注: 训练 aux loss 监督的是 soft_count, 所以评测也用 soft_count, 保持口径一致.
+        # hard_count (threshold 0.5) 对欠训练模型偏低, 仅作诊断对照.
         cls_prob = cls_logit.softmax(dim=-1)             # [B, N, 2]
         soft_count = cls_prob[..., 1].sum(dim=-1)        # [B]  可微分软计数
-        hard_count = (cls_prob[..., 1] > 0.5).sum(dim=-1).float()  # [B]  推理真计数
+        hard_count = (cls_prob[..., 1] > 0.5).sum(dim=-1).float()  # [B]  仅作诊断对照
 
         pred = {
             "logits": cls_logit,                         # [B, N, 2]
             "points": coords,                            # [B, N, 2] 归一化
-            "count": hard_count,                         # eval 用这个
-            "soft_count": soft_count,                    # 辅助监督用
+            "count": soft_count,                         # eval 用这个 (与训练监督一致)
+            "soft_count": soft_count,                    # 同 count, 保留兼容
+            "hard_count": hard_count,                    # 诊断用 (threshold 0.5)
         }
         result: Dict[str, Any] = {"pred": pred}
 
