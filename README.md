@@ -156,6 +156,38 @@ TaskPrompter / DiTASK / TADFormer 论文在 NYUD / PASCAL 上都明显赢过 van
 
 不冻结 backbone 主要在 det 上拿到 +14pp AP50，其他任务受影响较小。这是**参数高效路线的内在 trade-off**：用部署/存储友好的 frozen backbone 换 ~4 pp 的整体 Δm。
 
+### W16 快速消融（AutoDL RTX 4090D, 2026-06-27/28）
+
+为验证主表结论是否依赖特定训练策略，追加了两组轻量消融：
+
+- **调度策略**：`ps`（α-balanced proportional sampling）vs `rr`（round-robin）
+- **loss 权重**：`uncertainty` vs `uniform`
+
+运行设置：`swin_tiny`, input 384, `bf16`, `batch_per_task=24`, `num_workers=16`；结果写入服务器 `logs/results_ablation.csv`。截至 2026-06-28 00:20，已完成 3 组，`mtlora_20ep_ps_uniform` 仍在后台训练。
+
+| Method (tag) | scheduler | weighting | seg/mIoU↑ | det/AP50↑ | det/AP↑ | cnt/MAE↓ | cls/acc↑ | aggregate↑ |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| vanilla_10ep_ps（主表） | ps | uncertainty | 0.670 | 0.803 | 0.395 | 13.30 | 0.995 | 0.286 |
+| mtlora_20ep_ps（主表） | ps | uncertainty | **0.677** | 0.773 | 0.354 | **11.51** | **0.998** | 0.325 |
+| **vanilla_rr_10ep** | rr | uncertainty | 0.670 | **0.807** | **0.401** | 11.52 | 0.998 | **0.331** |
+| mtlora_rr_20ep | rr | uncertainty | 0.670 | 0.762 | 0.342 | 12.38 | 0.998 | 0.298 |
+| vanilla_10ep_ps_uniform | ps | uniform | 0.658 | 0.803 | **0.401** | 12.90 | 0.996 | 0.293 |
+
+按主表同一 STL baseline 估算 Δm：
+
+| Method | seg/mIoU | det/AP50 | cnt/MAE | cls/acc | Δm |
+|---|---:|---:|---:|---:|---:|
+| vanilla_rr_10ep | +5.61% | +1.95% | +18.88% | +1.16% | **+6.90%** |
+| mtlora_rr_20ep | +5.56% | -3.65% | +12.80% | +1.17% | +3.97% |
+| vanilla_10ep_ps_uniform | +3.79% | +1.51% | +9.15% | +1.02% | +3.87% |
+
+**消融结论**：
+
+1. **调度策略是跨数据集 MTL 的核心变量，不是实现细节。** RR 调度显著提升 vanilla，尤其计数 MAE 从 13.30 降到 11.52，同时检测 AP50 达到 0.807，说明强制任务均衡能缓解 cls 数据量过大带来的采样偏置。
+2. **MTLoRA 的优势与 PS 调度存在耦合。** 在主表 PS 设置下 MTLoRA 综合最好；但切到 RR 后，MTLoRA 的 det/AP50 与 cnt/MAE 都低于 vanilla_rr。这说明跨数据集 MTL 的性能由“适配结构 × 数据调度”共同决定，不能只比较模型结构。
+3. **uncertainty loss 不是 vanilla 表现的唯一来源。** `vanilla_10ep_ps_uniform` 仍保持接近主表的检测 AP50/AP，并优于主表 vanilla 的计数 MAE；loss 权重会影响任务折中，但主导因素仍是数据调度与 backbone 是否可更新。
+4. 因此，最终报告中不应简单表述为“MTLoRA 在所有设置下最好”，更准确的结论是：**在原始 PS 跨数据集设定下，细粒度 LoRA 适配取得最优综合表现；而在强任务均衡 RR 设定下，unfreeze vanilla 也能获得很强性能，说明异质 MTL 需要同时设计调度策略和适配机制。**
+
 ### Smoke 验证（2026-06-16 / 17, RTX 4090）
 
 `python train.py --steps 8 --no_save`（服务器）均 PASS：
