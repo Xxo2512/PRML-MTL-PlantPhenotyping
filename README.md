@@ -158,35 +158,58 @@ TaskPrompter / DiTASK / TADFormer 论文在 NYUD / PASCAL 上都明显赢过 van
 
 ### W16 快速消融（AutoDL RTX 4090D, 2026-06-27/28）
 
-为验证主表结论是否依赖特定训练策略，追加了两组轻量消融：
+为验证主表结论是否依赖特定训练策略，追加了调度策略、loss 权重、LoRA rank 和 frozen baseline 消融。运行设置：`swin_tiny`, input 384, `bf16`, `batch_per_task=24`, `num_workers=16`；结果写入服务器 `logs/results_ablation.csv`。
 
-- **调度策略**：`ps`（α-balanced proportional sampling）vs `rr`（round-robin）
-- **loss 权重**：`uncertainty` vs `uniform`
+#### 全量微调参考（unfreeze vanilla）
 
-运行设置：`swin_tiny`, input 384, `bf16`, `batch_per_task=24`, `num_workers=16`；结果写入服务器 `logs/results_ablation.csv`。截至 2026-06-28 00:20，已完成 3 组，`mtlora_20ep_ps_uniform` 仍在后台训练。
+这组实验中 vanilla 的 backbone **不冻结**，因此它是 full fine-tuning reference / upper bound，不作为参数高效方法的公平 baseline。
 
-| Method (tag) | scheduler | weighting | seg/mIoU↑ | det/AP50↑ | det/AP↑ | cnt/MAE↓ | cls/acc↑ | aggregate↑ |
-|---|---|---|---:|---:|---:|---:|---:|---:|
-| vanilla_10ep_ps（主表） | ps | uncertainty | 0.670 | 0.803 | 0.395 | 13.30 | 0.995 | 0.286 |
-| mtlora_20ep_ps（主表） | ps | uncertainty | **0.677** | 0.773 | 0.354 | **11.51** | **0.998** | 0.325 |
-| **vanilla_rr_10ep** | rr | uncertainty | 0.670 | **0.807** | **0.401** | 11.52 | 0.998 | **0.331** |
-| mtlora_rr_20ep | rr | uncertainty | 0.670 | 0.762 | 0.342 | 12.38 | 0.998 | 0.298 |
-| vanilla_10ep_ps_uniform | ps | uniform | 0.658 | 0.803 | **0.401** | 12.90 | 0.996 | 0.293 |
+| Method (tag) | freeze | scheduler | weighting | seg/mIoU↑ | det/AP50↑ | det/AP↑ | cnt/MAE↓ | cls/acc↑ | aggregate↑ |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|
+| vanilla_10ep_ps（主表） | ❌ | ps | uncertainty | 0.670 | 0.803 | 0.395 | 13.30 | 0.995 | 0.286 |
+| **vanilla_rr_10ep** | ❌ | rr | uncertainty | 0.670 | **0.807** | **0.401** | **11.52** | **0.998** | **0.331** |
+| vanilla_10ep_ps_uniform | ❌ | ps | uniform | 0.658 | 0.803 | **0.401** | 12.90 | 0.996 | 0.293 |
+
+#### 公平 frozen / PEFT 对比
+
+这组实验统一冻结 backbone，仅训练 task heads 或 LoRA + heads，比较口径与 MTLoRA / TaskPrompter / TADFormer / DiTASK / PGT 一致。
+
+| Method (tag) | trainable | scheduler | weighting | seg/mIoU↑ | det/AP50↑ | det/AP↑ | cnt/MAE↓ | cls/acc↑ | aggregate↑ |
+|---|---:|---|---|---:|---:|---:|---:|---:|---:|
+| vanilla_frozen_20ep_ps（主表） | 11.78M | ps | uncertainty | 0.660 | 0.659 | 0.272 | 12.53 | 0.969 | 0.265 |
+| vanilla_frozen_rr_20ep | 11.78M | rr | uncertainty | 0.665 | 0.646 | 0.259 | 13.04 | 0.956 | 0.249 |
+| vanilla_frozen_20ep_ps_uniform | 11.78M | ps | uniform | 0.658 | 0.636 | 0.242 | 14.00 | 0.971 | 0.222 |
+| mtlora_20ep_ps（主表, r16） | 17.43M | ps | uncertainty | **0.677** | **0.773** | **0.354** | **11.51** | **0.998** | **0.325** |
+| mtlora_20ep_ps_uniform（r16） | 17.43M | ps | uniform | 0.666 | 0.769 | 0.347 | 12.21 | 0.997 | 0.304 |
+| mtlora_rr_20ep（r16） | 17.43M | rr | uncertainty | 0.670 | 0.762 | 0.342 | 12.38 | 0.998 | 0.298 |
 
 按主表同一 STL baseline 估算 Δm：
 
 | Method | seg/mIoU | det/AP50 | cnt/MAE | cls/acc | Δm |
 |---|---:|---:|---:|---:|---:|
-| vanilla_rr_10ep | +5.61% | +1.95% | +18.88% | +1.16% | **+6.90%** |
-| mtlora_rr_20ep | +5.56% | -3.65% | +12.80% | +1.17% | +3.97% |
-| vanilla_10ep_ps_uniform | +3.79% | +1.51% | +9.15% | +1.02% | +3.87% |
+| mtlora_20ep_ps（r16） | +6.72% | -2.34% | +18.93% | +1.21% | **+6.13%*** |
+| mtlora_20ep_ps_uniform（r16） | +5.01% | -2.84% | +14.03% | +1.12% | +4.33% |
+| mtlora_rr_20ep（r16） | +5.56% | -3.65% | +12.80% | +1.17% | +3.97% |
+| vanilla_frozen_rr_20ep | +4.86% | -18.31% | +8.19% | -3.09% | -2.09% |
+| vanilla_frozen_20ep_ps_uniform | +3.75% | -19.63% | +1.43% | -1.59% | -4.01% |
+
+> *该表的 Δm 使用 `cnt/MAE` 相对 `single_cnt_5ep` 计算；上文主表 Δm 保留老师建议脚本输出，用于排名复现。
+
+#### LoRA rank 消融
+
+| Method (tag) | rank | LoRA params | seg/mIoU↑ | det/AP50↑ | det/AP↑ | cnt/MAE↓ | cls/acc↑ | aggregate↑ |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| mtlora_r4_20ep_ps | 4 | 1.41M | 0.664 | 0.756 | 0.350 | 11.81 | **0.999** | 0.310 |
+| mtlora_r8_20ep_ps | 8 | 2.83M | 0.665 | 0.749 | 0.333 | 11.88 | 0.999 | 0.307 |
+| mtlora_20ep_ps（主表） | 16 | 5.65M | **0.677** | **0.773** | **0.354** | **11.51** | 0.998 | **0.325** |
 
 **消融结论**：
 
-1. **调度策略是跨数据集 MTL 的核心变量，不是实现细节。** RR 调度显著提升 vanilla，尤其计数 MAE 从 13.30 降到 11.52，同时检测 AP50 达到 0.807，说明强制任务均衡能缓解 cls 数据量过大带来的采样偏置。
-2. **MTLoRA 的优势与 PS 调度存在耦合。** 在主表 PS 设置下 MTLoRA 综合最好；但切到 RR 后，MTLoRA 的 det/AP50 与 cnt/MAE 都低于 vanilla_rr。这说明跨数据集 MTL 的性能由“适配结构 × 数据调度”共同决定，不能只比较模型结构。
-3. **uncertainty loss 不是 vanilla 表现的唯一来源。** `vanilla_10ep_ps_uniform` 仍保持接近主表的检测 AP50/AP，并优于主表 vanilla 的计数 MAE；loss 权重会影响任务折中，但主导因素仍是数据调度与 backbone 是否可更新。
-4. 因此，最终报告中不应简单表述为“MTLoRA 在所有设置下最好”，更准确的结论是：**在原始 PS 跨数据集设定下，细粒度 LoRA 适配取得最优综合表现；而在强任务均衡 RR 设定下，unfreeze vanilla 也能获得很强性能，说明异质 MTL 需要同时设计调度策略和适配机制。**
+1. **必须区分 full fine-tuning reference 和 fair PEFT baseline。** `vanilla_rr_10ep` 不冻结 backbone，aggregate 达到 0.331，说明如果允许全量更新 backbone，模型能吸收跨数据集分布差异；但它不是与 MTLoRA 的公平参数高效对照。
+2. **公平 frozen 设定下，MTLoRA 显著优于 frozen vanilla。** `vanilla_frozen_rr_20ep` / `vanilla_frozen_20ep_ps_uniform` 的 det/AP50 只有 0.646 / 0.636，而 MTLoRA r16 在 PS 下达到 0.773；aggregate 也从 0.249 / 0.222 提升到 0.325。
+3. **loss 权重不是 MTLoRA 优势的唯一来源。** 在 uniform loss 下，MTLoRA 仍有 0.769 det/AP50 和 0.304 aggregate，明显高于 frozen vanilla uniform 的 0.636 det/AP50 和 0.222 aggregate。
+4. **低 rank LoRA 没有崩，说明收益不只是靠参数量堆出来。** r4 / r8 的 aggregate 仍在 0.307–0.310，接近 r16；r16 主要在 seg 和 det 上进一步拉开。
+5. 最终结论应表述为：**在 frozen-backbone 的参数高效跨数据集 MTL 设定下，细粒度 LoRA 适配显著缓解 frozen backbone 的负迁移；而 unfreeze vanilla 代表全量微调上界，说明 backbone 可训练性本身也是跨数据集 MTL 的关键因素。**
 
 ### Smoke 验证（2026-06-16 / 17, RTX 4090）
 
